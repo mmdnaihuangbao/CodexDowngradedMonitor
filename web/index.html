@@ -1,0 +1,92 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Codex 模型降级监控</title>
+<link rel="icon" href="data:,">
+<link rel="stylesheet" href="/style.css">
+</head>
+<body>
+
+<header class="topbar">
+  <div class="brand">
+    <span class="dot" id="live-dot"></span>
+    <h1>Codex 模型降级监控</h1>
+    <span class="pill" id="status-pill">连接中…</span>
+  </div>
+
+  <div class="meta" id="meta">
+    <span class="m"><em>PID</em><b id="m-pid">—</b></span>
+    <span class="m"><em>预期模型</em><b id="m-expect">—</b></span>
+    <span class="m"><em>采样频率</em><b id="m-hz">—</b></span>
+    <span class="m"><em>单轮耗时</em><b id="m-cost">—</b></span>
+    <span class="m"><em>单轮扫描量</em><b id="m-bytes">—</b></span>
+    <span class="m"><em>扫描线程</em><b id="m-workers">—</b></span>
+    <span class="m"><em>轮间空闲</em><b id="m-idle">—</b></span>
+    <span class="m"><em>轮数</em><b id="m-rounds">0</b></span>
+    <span class="m"><em>已捕获</em><b id="m-captured">0</b></span>
+    <span class="m"><em>请求配对</em><b id="m-paired">0</b></span>
+    <span class="m"><em>最后采样</em><b id="m-last">—</b></span>
+  </div>
+
+  <div class="counts">
+    <button class="cnt c-normal"     data-filter="normal"><b id="c-normal">0</b><span>正常</span></button>
+    <button class="cnt c-subtask"    data-filter="subtask"><b id="c-subtask">0</b><span>子任务</span></button>
+    <button class="cnt c-incomplete" data-filter="incomplete"><b id="c-incomplete">0</b><span>不完整</span></button>
+    <button class="cnt c-downgrade"  data-filter="downgrade"><b id="c-downgrade">0</b><span>降级</span></button>
+  </div>
+</header>
+
+<div class="toolbar">
+  <div class="filters" id="filters">
+    <button class="fbtn active" data-filter="all">全部</button>
+    <button class="fbtn" data-filter="downgrade">降级</button>
+    <button class="fbtn" data-filter="incomplete">不完整</button>
+    <button class="fbtn" data-filter="subtask">子任务</button>
+    <button class="fbtn" data-filter="normal">正常</button>
+  </div>
+  <input id="search" class="search" type="search" placeholder="搜索 响应ID / 模型 / effort / 状态 …">
+  <div class="actions">
+    <button class="abtn" id="btn-diag" title="对 memory 做一次独立扫描并返回原始统计">诊断</button>
+    <button class="abtn" id="btn-cfg" title="修改预期模型与采样间隔">配置</button>
+    <button class="abtn" id="btn-clear" title="清空已捕获数据">清空</button>
+    <button class="abtn danger" id="btn-stop" title="停止采集并退出服务">停止</button>
+  </div>
+</div>
+
+<main>
+  <div id="empty" class="empty">
+    <h2>尚未捕获到任何响应对象</h2>
+    <p>响应对象只在请求生命周期内存在于 codex.exe 堆内存中。</p>
+    <p>请让 Codex 实际发起一次对话，然后这里的卡片会自动出现。</p>
+    <p class="hint" id="empty-hint"></p>
+  </div>
+  <div id="cards" class="grid"></div>
+  <div id="more" class="more hidden"></div>
+</main>
+
+<footer class="logbar">
+  <button class="logtoggle" id="log-toggle">
+    <span class="chev">▸</span> 运行日志 <span class="logcount" id="log-count">0</span>
+  </button>
+  <button class="logclear" id="log-clear">清屏</button>
+  <div class="logpanel hidden" id="log-panel"></div>
+</footer>
+
+<div class="modal hidden" id="modal">
+  <div class="modal-box">
+    <h3 id="modal-title">配置</h3>
+    <div class="modal-body" id="modal-body"></div>
+    <div class="modal-foot">
+      <button class="abtn" id="modal-close">关闭</button>
+      <button class="abtn primary hidden" id="modal-save">保存</button>
+    </div>
+  </div>
+</div>
+
+<div id="toast" class="toast hidden"></div>
+
+<script src="/app.js"></script>
+</body>
+</html>
