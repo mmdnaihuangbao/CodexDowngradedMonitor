@@ -51,7 +51,22 @@ function esc(s){
 }
 function shortId(rid){
   if (!rid) return '—';
-  return rid.length > 26 ? rid.slice(0,14) + '…' + rid.slice(-10) : rid;
+  return String(rid).replace(/^resp_/, '').slice(0, 5);
+}
+function requestDuration(r){
+  if (!r.created_at) return '—';
+  if (!r.completed_at) return ['queued', 'in_progress'].includes(r.status) ? '未完成' : '—';
+  // 兼容尚未重启的采集器；旧接口返回包含日期的本地时间。
+  let seconds = r.duration_seconds;
+  if (seconds === undefined){
+    const start = Date.parse(r.created_at.replace(' ', 'T'));
+    const end = Date.parse(r.completed_at.replace(' ', 'T'));
+    seconds = (end - start) / 1000;
+  }
+  if (typeof seconds !== 'number' || !Number.isFinite(seconds) || seconds < 0) return '—';
+  if (seconds < 60) return `${seconds} 秒`;
+  if (seconds < 3600) return `${Math.floor(seconds / 60)} 分 ${seconds % 60} 秒`;
+  return `${Math.floor(seconds / 3600)} 时 ${Math.floor(seconds % 3600 / 60)} 分 ${seconds % 60} 秒`;
 }
 function relTime(ts){
   if (!ts) return '—';
@@ -238,18 +253,18 @@ function cardHtml(r){
       <span class="badge${v==='downgrade'?' blink':''}">${VERDICT_CN[v] || v}</span>
       <span class="model" title="${esc(r.model)}">${esc(r.model)}</span>
       <span class="swapline ${swapCls}">${swapInner}</span>
+      <span class="duration"><em>请求总耗时</em><strong>${esc(requestDuration(r))}</strong></span>
       <span class="status" data-s="${esc(r.status || '')}">
         <i class="sd"></i>${esc(r.status || '-')}
       </span>
     </div>
 
     <div class="card-sub">
-      <span class="rid" title="点击复制完整响应ID">${esc(r.rid)}</span>
+      <button type="button" class="rid" title="${esc(r.rid)} · 双击复制完整请求号" aria-label="请求号 ${esc(shortId(r.rid))}，双击或按回车复制完整请求号">${esc(shortId(r.rid))}</button>
       ${meta('effort', r.effort, effortCls)}
       ${meta('格式', r.text_format)}
       ${meta('创建', r.created_at)}
       ${meta('完成', r.completed_at)}
-      ${meta('标识', r.safety_id)}
       ${meta('标记', r.marks)}
       ${r.updates ? `<span class="upd">状态更新 ${r.updates} 次</span>` : ''}
       <span class="subtime">${esc(hhmmss(r.last_seen))}</span>
@@ -260,7 +275,7 @@ function cardHtml(r){
 /* 卡片内容签名：这些字段任一变化才需要重建这张卡的内容 */
 function cardSig(r){
   return [r.model, r.req_model, r.verdict, r.effort, r.status, r.text_format,
-          r.created_at, r.completed_at, r.safety_id, r.marks, r.updates,
+          r.created_at, r.completed_at, r.duration_seconds, r.marks, r.updates,
           r.last_seen].join('\u0002');
 }
 
@@ -272,7 +287,7 @@ function createCardNode(r){
   // 因为筛选/搜索被回收再重建的卡片不播，避免整屏闪。
   if (seenRids.has(r.rid)) node.classList.add('no-anim');
   else seenRids.add(r.rid);
-  node.querySelector('.rid')?.addEventListener('click', ()=>copy(r.rid));
+  bindRequestId(node, r.rid);
   return node;
 }
 
@@ -280,9 +295,17 @@ function updateCardNode(el, r){
   const tmp = document.createElement('div');
   tmp.innerHTML = cardHtml(r);
   const fresh = tmp.firstElementChild;
-  el.className = fresh.className;        // 判定可能变（如 不完整 -> 降级）
+  el.className = fresh.className + ' no-anim';
   el.innerHTML = fresh.innerHTML;        // 外层 article 本身保留，动画不重放
-  el.querySelector('.rid')?.addEventListener('click', ()=>copy(r.rid));
+  bindRequestId(el, r.rid);
+}
+
+function bindRequestId(node, rid){
+  const button = node.querySelector('.rid');
+  button?.addEventListener('dblclick', ()=>copy(rid));
+  button?.addEventListener('keydown', e=>{
+    if (e.key === 'Enter' || e.key === ' '){ e.preventDefault(); copy(rid); }
+  });
 }
 
 function renderCards(){
@@ -290,6 +313,7 @@ function renderCards(){
     .sort((a,b)=> (b.last_seen||0) - (a.last_seen||0));
   const list = all.filter(matchFilter);
   const shown = list.slice(0, MAX_RENDER);
+  $('result-count').textContent = `${list.length} 条请求`;
 
   const listEmpty = list.length === 0;
   el.empty.classList.toggle('hidden', !listEmpty);
@@ -374,8 +398,9 @@ function resetCardRender(){
 /* ---------------------------------------------------------- 交互 */
 function copy(text){
   if (!text) return;
-  navigator.clipboard?.writeText(text)
-    .then(()=>toast('已复制：' + shortId(text)))
+  if (!navigator.clipboard){ toast('当前环境不支持剪贴板，请使用本地浏览器打开', true); return; }
+  navigator.clipboard.writeText(text)
+    .then(()=>toast('已复制完整请求号'))
     .catch(()=>toast('复制失败', true));
 }
 

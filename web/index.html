@@ -8,85 +8,53 @@
 <link rel="stylesheet" href="/style.css">
 </head>
 <body>
-
+<div class="workspace">
 <header class="topbar">
-  <div class="brand">
-    <span class="dot" id="live-dot"></span>
-    <h1>Codex 模型降级监控</h1>
-    <span class="pill" id="status-pill">连接中…</span>
+  <div class="brand"><div class="brand-icon" aria-hidden="true">C<span>↘</span></div><div><div class="eyebrow">CODEX / MODEL MONITOR</div><h1>模型降级监控</h1></div></div>
+  <div class="connection"><span class="dot" id="live-dot"></span><span class="pill" id="status-pill">连接中…</span></div>
+  <div class="actions">
+    <button class="abtn" id="btn-diag" title="查看最近一轮扫描统计">诊断</button>
+    <button class="abtn" id="btn-cfg" title="修改预期模型与采样间隔">配置</button>
+    <button class="abtn" id="btn-clear" title="清空已捕获数据">清空</button>
+    <button class="abtn danger" id="btn-stop" title="停止采集并退出服务">停止采集</button>
   </div>
-
+</header>
+<section class="overview" aria-label="监控概览">
+  <div class="section-intro"><div><p class="eyebrow">OVERVIEW</p><h2>每次响应，一目了然。</h2><p class="intro-note">追踪请求与响应模型，及时发现异常切换。</p></div><div class="expected"><span>预期模型</span><b id="m-expect">—</b></div></div>
+  <div class="counts">
+    <button class="cnt c-normal" data-filter="normal"><span class="count-label"><i></i>正常响应<span class="count-arrow">↗</span></span><b id="c-normal">0</b><span class="count-note">请求与响应模型一致</span></button>
+    <button class="cnt c-subtask" data-filter="subtask"><span class="count-label"><i></i>子任务<span class="count-arrow">↗</span></span><b id="c-subtask">0</b><span class="count-note">子任务模型调用</span></button>
+    <button class="cnt c-incomplete" data-filter="incomplete"><span class="count-label"><i></i>证据不完整<span class="count-arrow">↗</span></span><b id="c-incomplete">0</b><span class="count-note">缺少请求信息，暂不能判定</span></button>
+    <button class="cnt c-downgrade" data-filter="downgrade"><span class="count-label"><i></i>模型降级<span class="count-arrow">↗</span></span><b id="c-downgrade">0</b><span class="count-note">需要关注的模型变更</span></button>
+  </div>
+</section>
+<details class="collector-details"><summary><span>采集详情</span><span class="collector-summary">已捕获 <b id="m-captured">0</b><span class="divider">/</span>请求配对 <b id="m-paired">0</b></span></summary>
   <div class="meta" id="meta">
     <span class="m"><em>PID</em><b id="m-pid">—</b></span>
-    <span class="m"><em>预期模型</em><b id="m-expect">—</b></span>
     <span class="m"><em>采样频率</em><b id="m-hz">—</b></span>
     <span class="m"><em>单轮耗时</em><b id="m-cost">—</b></span>
     <span class="m"><em>单轮扫描量</em><b id="m-bytes">—</b></span>
     <span class="m"><em>扫描线程</em><b id="m-workers">—</b></span>
     <span class="m"><em>轮间空闲</em><b id="m-idle">—</b></span>
     <span class="m"><em>轮数</em><b id="m-rounds">0</b></span>
-    <span class="m"><em>已捕获</em><b id="m-captured">0</b></span>
-    <span class="m"><em>请求配对</em><b id="m-paired">0</b></span>
     <span class="m"><em>最后采样</em><b id="m-last">—</b></span>
   </div>
-
-  <div class="counts">
-    <button class="cnt c-normal"     data-filter="normal"><b id="c-normal">0</b><span>正常</span></button>
-    <button class="cnt c-subtask"    data-filter="subtask"><b id="c-subtask">0</b><span>子任务</span></button>
-    <button class="cnt c-incomplete" data-filter="incomplete"><b id="c-incomplete">0</b><span>不完整</span></button>
-    <button class="cnt c-downgrade"  data-filter="downgrade"><b id="c-downgrade">0</b><span>降级</span></button>
-  </div>
-</header>
-
-<div class="toolbar">
-  <div class="filters" id="filters">
-    <button class="fbtn active" data-filter="all">全部</button>
-    <button class="fbtn" data-filter="downgrade">降级</button>
-    <button class="fbtn" data-filter="incomplete">不完整</button>
-    <button class="fbtn" data-filter="subtask">子任务</button>
-    <button class="fbtn" data-filter="normal">正常</button>
-  </div>
-  <input id="search" class="search" type="search" placeholder="搜索 响应ID / 模型 / effort / 状态 …">
-  <div class="actions">
-    <button class="abtn" id="btn-diag" title="对 memory 做一次独立扫描并返回原始统计">诊断</button>
-    <button class="abtn" id="btn-cfg" title="修改预期模型与采样间隔">配置</button>
-    <button class="abtn" id="btn-clear" title="清空已捕获数据">清空</button>
-    <button class="abtn danger" id="btn-stop" title="停止采集并退出服务">停止</button>
-  </div>
-</div>
-
+</details>
 <main>
-  <div id="empty" class="empty">
-    <h2>尚未捕获到任何响应对象</h2>
-    <p>响应对象只在请求生命周期内存在于 codex.exe 堆内存中。</p>
-    <p>请让 Codex 实际发起一次对话，然后这里的卡片会自动出现。</p>
-    <p class="hint" id="empty-hint"></p>
-  </div>
-  <div id="cards" class="grid"></div>
-  <div id="more" class="more hidden"></div>
-</main>
-
-<footer class="logbar">
-  <button class="logtoggle" id="log-toggle">
-    <span class="chev">▸</span> 运行日志 <span class="logcount" id="log-count">0</span>
-  </button>
-  <button class="logclear" id="log-clear">清屏</button>
-  <div class="logpanel hidden" id="log-panel"></div>
-</footer>
-
-<div class="modal hidden" id="modal">
-  <div class="modal-box">
-    <h3 id="modal-title">配置</h3>
-    <div class="modal-body" id="modal-body"></div>
-    <div class="modal-foot">
-      <button class="abtn" id="modal-close">关闭</button>
-      <button class="abtn primary hidden" id="modal-save">保存</button>
+  <div class="list-heading"><h2>请求记录 <span id="result-count">0 条请求</span></h2><span class="list-hint">请求号双击复制 · 最新更新优先</span></div>
+  <div class="toolbar">
+    <div class="filters" id="filters" aria-label="按判定筛选">
+      <button class="fbtn active" data-filter="all">全部</button><button class="fbtn" data-filter="downgrade">降级</button><button class="fbtn" data-filter="incomplete">不完整</button><button class="fbtn" data-filter="subtask">子任务</button><button class="fbtn" data-filter="normal">正常</button>
     </div>
+    <input id="search" class="search" type="search" aria-label="搜索请求" placeholder="搜索请求号、模型、状态…">
   </div>
+  <div id="empty" class="empty"><div class="empty-icon" aria-hidden="true">⌁</div><h2>尚未捕获到任何响应对象</h2><p>在 Codex 中发起一次对话，请求记录将在这里自动出现。</p><p class="hint" id="empty-hint"></p></div>
+  <div id="cards" class="grid"></div><div id="more" class="more hidden"></div>
+</main>
 </div>
-
-<div id="toast" class="toast hidden"></div>
-
+<footer class="logbar"><button class="logtoggle" id="log-toggle"><span class="chev">▸</span>运行日志<span class="logcount" id="log-count">0</span></button><button class="logclear" id="log-clear">清屏</button><div class="logpanel hidden" id="log-panel"></div></footer>
+<div class="modal hidden" id="modal"><div class="modal-box" role="dialog" aria-modal="true" aria-labelledby="modal-title"><h3 id="modal-title">配置</h3><div class="modal-body" id="modal-body"></div><div class="modal-foot"><button class="abtn" id="modal-close">关闭</button><button class="abtn primary hidden" id="modal-save">保存</button></div></div></div>
+<div id="toast" class="toast hidden" role="status"></div>
 <script src="/app.js"></script>
 </body>
 </html>

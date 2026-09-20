@@ -719,6 +719,14 @@ class Monitor:
     # ---------------- 序列化 ----------------
     @staticmethod
     def ser(rec):
+        created = rec.get("created_at")
+        completed = rec.get("completed_at")
+        try:
+            duration = int(completed) - int(created)
+            if int(created) <= 0 or duration < 0:
+                duration = None
+        except (TypeError, ValueError, OverflowError):
+            duration = None
         return {
             "rid": rec.get("response_id"),
             "model": rec.get("model"),
@@ -731,6 +739,7 @@ class Monitor:
             "safety_id": rec.get("safety_id"),
             "created_at": fmt_epoch(rec.get("created_at")),
             "completed_at": fmt_epoch(rec.get("completed_at")),
+            "duration_seconds": duration,
             "marks": rec.get("_marks"),
             "first_seen": rec.get("_first_seen"),
             "last_seen": rec.get("_last_seen"),
