@@ -9,6 +9,9 @@ __pycache__/
 # Native build output
 cpp_collector/build/
 
+# Local release packages
+release/
+
 # Captured history and SQLite sidecar files
 data/
 *.sqlite

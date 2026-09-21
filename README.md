@@ -2,7 +2,7 @@
 
 > **历史记录已持久化**：两种后端共用 `data/monitor.sqlite`，支持启动恢复、服务端分页、起止日历筛选及疑似样本隔离。详见 [历史记录说明](HISTORY.md)。
 
-> **2026-09-20：新增 C++ 采集后端。** 双击 `start-cpp.bat`（默认 48778）或 `start-python.bat`（默认 48766）；命令行用 `python start.py --backend cpp/python`。C++ 负责扫描和解析，Python 保留网页服务。两种后端的进程发现都已改用 Windows API，不再运行 PowerShell 枚举；存活检测、延迟配对与歧义处理也已修正。以下旧版原理说明以 [C++ 采集器说明](cpp_collector/README.md) 中的更新为准。
+> **2026-09-20：新增 C++ 采集后端。** 双击 `start-cpp.bat`（默认 48778）或 `start-python.bat`（默认 48766），C++ 模式可用 `stop-cpp.bat` 停止；命令行用 `python start.py --backend cpp/python`。C++ 负责扫描和解析，Python 保留网页服务。两种后端的进程发现都已改用 Windows API，不再运行 PowerShell 枚举；存活检测、延迟配对与歧义处理也已修正。以下旧版原理说明以 [C++ 采集器说明](cpp_collector/README.md) 中的更新为准。
 
 
 把 `codex_model_watch2.py` 的控制台输出，改造成 **常驻静默采集 + 本地 HTTP 视图服务 + 前端卡片面板**。
@@ -74,6 +74,8 @@ Codex（codex.exe）收到服务端 WebSocket 帧后，会把响应对象反序�
 
 ### 四级分类
 
+默认预期模型为空：请求与响应模型一致为正常，不一致沿用降级判定；无法配对为不完整，不再按 `low` 主动标记子任务。以下启发式仅在预期模型非空时适用。每条记录固定使用首次采集时的预期模型；修改配置不重算历史，旧库没有记录的预期模型不猜测回填。
+
 **拿到了请求模型（配对成功）→ 这才是硬证据：**
 
 | 判定 | 条件 | 颜色 | 报警 |
@@ -142,14 +144,14 @@ collector.log     运行日志（自动生成，与前端「运行日志」抽�
 
 ## 四、启动
 
-**双击 `start.bat`** —— 全程无窗口，浏览器会自动打开面板。
+**双击 `start.bat`** —— 控制台显示实际前端地址，浏览器会自动打开面板。采集器仍在后台独立运行，关闭启动窗口不会停止采集器。
 
 或者用 `start.py`（推荐，所有控制都在这里）：
 
 ```bat
 python start.py                        :: 启动（已在跑就只把浏览器指过去）
 python start.py --workers 8            :: 并行扫描线程数（默认 4）
-python start.py --idle 0.1             :: 两轮扫描之间的空闲秒（默认 0 = 连续扫）
+python start.py --min-interval-ms 100  :: 最小采样间隔，单位 ms（默认 0 = 连续扫）
 python start.py --port 9000
 python start.py --expect gpt-6-astra
 python start.py --fg                   :: 前台运行，Ctrl+C 停止（排错用）
@@ -159,6 +161,29 @@ python start.py --stop                 :: 停止服务
 
 `start.bat` 也支持透传：`start.bat --stop` / `start.bat --status` /
 `start.bat --workers 8`。
+
+根目录 `config.json` 保存配置：
+
+```json
+{
+  "version": "0.1",
+  "host": "localhost",
+  "port": 48766,
+  "cpp_port": 48778,
+  "expect": "",
+  "min_interval_ms": 0,
+  "workers": 4
+}
+```
+
+- `port` 是 Python 后端端口，`cpp_port` 是 C++ 后端端口。端口被占用仍自动顺延，启动器输出实际地址。
+- `host` 设置为 `0.0.0.0` 时监听所有 IPv4 网卡，局域网使用 `http://本机局域网IP:实际端口/` 访问。本机浏览器使用 `localhost`。
+- 网页可保存预期模型、最小采样间隔和线程数。间隔范围 0～60000ms，线程范围 1～16；线程变更在下一轮扫描时应用，C++ 辅助进程可重启，HTTP 服务保持运行。
+- 两轮开始时间至少相隔 `min_interval_ms`；扫描耗时超过间隔时直接开始下一轮，0 表示连续扫描。`--idle` / 采集器的 `--interval` 保留为秒单位别名，统一采用最小间隔语义。
+- 启动时显式命令行参数覆盖文件配置，只影响当次运行。网页保存将当前采样设置写回文件；HTTP 地址和端口在下次启动服务时生效。文件损坏或版本不支持时拒绝启动，不静默退回默认值。
+- SSE 每两秒推送统计心跳，无需出现新请求；“采集中”和“采集详情”持续更新。最后采样显示最近实际完成扫描的时间，不伪造新采样。
+
+实际内存字段调查见 [字段清单](FIELD_SURVEY.md)。
 
 ### 为什么启动逻辑不放在 bat 里
 
@@ -203,14 +228,14 @@ python _scancheck.py     :: 扫描/判定链路（强烈建议先跑这个）
 | GET | `/api/snapshot` | 全量状态快照（读状态库） |
 | GET | `/api/stream` | SSE：首帧 `snapshot` + 增量 `patch` |
 | GET | `/api/diagnose` | 只读回放最近一轮扫描观测（**不触发扫描**） |
-| POST | `/api/config` | `{"expect":"gpt-6-astra","idle":0}` |
+| POST | `/api/config` | `{"expect":"","min_interval_ms":0,"workers":4}`，保存到 `config.json` |
 | POST | `/api/clear` | 清空已捕获数据（采集不停） |
 | POST | `/api/shutdown` | 停止采集并退出服务 |
 
 ## 六、面板
 
 - **顶栏**：状态灯、PID、预期模型、采样频率、单轮耗时、单轮扫描量、扫描线程、
-  轮间空闲、轮数、已捕获、请求配对、最后采样
+  最小采样间隔、轮数、已捕获、请求配对、最后采样
 - **统计胶囊**：正常 / 子任务 / 不完整 / 降级，点击即筛选
 - **卡片列表**：**纵向单列，一行一张**；左侧色条 + 徽章区分四级
   （降级 = 红实线 + 徽章闪烁；不完整 = 亮黄虚线）
@@ -256,7 +281,7 @@ python _scancheck.py     :: 扫描/判定链路（强烈建议先跑这个）
 2. 双击 `start.bat`，等页面自动打开
 3. 看顶栏「采样频率 / 单轮耗时 / 单轮扫描量」：
    - 单轮耗时明显大于 0.05s → 加 `--workers`（如 `--workers 8`）
-   - 想留点 CPU → `--idle 0.1`
+   - 想限制采样频率 → `--min-interval-ms 100`
 4. 点「诊断」看最近一轮的 `预筛命中块 / 原始响应对象 / 请求侧映射`：
    - `raw_responses = 0` 且 blocks > 0 → 判据太严，需要放宽 `SERVER_MIN_MARKERS`
    - `raw_responses > 0` 但卡片没出现 → 看 `_verdict` 分类

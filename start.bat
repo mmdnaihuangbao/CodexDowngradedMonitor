@@ -27,22 +27,14 @@ if not defined PY (
   exit /b 1
 )
 
-for %%A in (%*) do (
-  if /i "%%~A"=="--stop" goto :sync
-  if /i "%%~A"=="--status" goto :sync
-)
-
-start "" "%PY%" "%~dp0start.py" %*
-exit /b 0
-
-:sync
-rem stop/status need a visible console, so use python.exe instead of pythonw.exe
+rem Keep launcher output visible; the collector still runs detached.
 set "PYC=%PY:pythonw.exe=python.exe%"
 if not exist "%PYC%" set "PYC=%PY%"
 "%PYC%" "%~dp0start.py" %*
+set "RESULT=%ERRORLEVEL%"
 echo.
 pause
-exit /b 0
+exit /b %RESULT%
 
 :pick_python
 set "PY="

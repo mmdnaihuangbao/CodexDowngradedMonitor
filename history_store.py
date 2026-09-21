@@ -8,6 +8,7 @@ import threading
 import time
 
 DEFAULT_DB = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'data', 'monitor.sqlite')
+DATA_VERSION = '0.1'
 VERDICTS = ('normal', 'subtask', 'incomplete', 'downgrade')
 
 def validation_reason(rec):
@@ -64,8 +65,14 @@ class HistoryStore:
                 id INTEGER PRIMARY KEY AUTOINCREMENT, observed_at REAL NOT NULL,
                 backend TEXT NOT NULL, payload TEXT NOT NULL
             );
-            PRAGMA user_version=1;
+            CREATE TABLE IF NOT EXISTS data_version (
+                id INTEGER PRIMARY KEY CHECK (id=1), version TEXT NOT NULL
+            );
         ''')
+        self.db.execute('INSERT OR IGNORE INTO data_version(id,version) VALUES (1,?)', (DATA_VERSION,))
+        if self.db.execute('PRAGMA user_version').fetchone()[0] == 0:
+            self.db.execute('PRAGMA user_version=1')
+        self.data_version = self.db.execute('SELECT version FROM data_version WHERE id=1').fetchone()[0]
         self.db.commit()
         self._version = -1
         self._totals = None
@@ -97,12 +104,21 @@ class HistoryStore:
                 existing = self.db.execute('SELECT payload FROM responses WHERE rid=?', (rid,)).fetchone()
                 if existing:
                     old = json.loads(existing['payload'])
+                    same_expect = old.get('_expect') == rec.get('_expect') and ('_expect' in old) == ('_expect' in rec)
                     rank = {'queued':1,'in_progress':2,'failed':3,'incomplete':3,'cancelled':3,'completed':4}
                     if rank.get(rec.get('status'),0) < rank.get(old.get('status'),0):
                         # A second backend must not regress a persisted terminal state.
                         rec = {**rec, **old}
                     else:
                         rec = {**old, **rec}
+                    # 两个采集后端竞争同一响应时，以已入库的首次采集配置为准。
+                    # 旧历史缺少目标模型时保持缺失，不能拿当前配置回填。
+                    if '_expect' in old:
+                        rec['_expect'] = old['_expect']
+                    else:
+                        rec.pop('_expect', None)
+                    if not same_expect:
+                        rec['_verdict'] = old.get('_verdict', 'incomplete')
                     rec['_first_seen'] = min(float(old.get('_first_seen') or now), float(rec.get('_first_seen') or now))
                     rec['_last_seen'] = max(float(old.get('_last_seen') or now), float(rec.get('_last_seen') or now))
                     rec['_updates'] = max(old.get('_updates',0),rec.get('_updates',0))

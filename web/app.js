@@ -222,14 +222,15 @@ function renderStatus(){
 
   $('m-backend').textContent = st.backend === 'cpp' ? 'C++ · 原生扫描' : 'Python';
   el.mPid.textContent      = st.pid ?? '—';
-  el.mExpect.textContent   = st.expect ?? '—';
+  el.mExpect.textContent   = st.expect || '未设置';
   el.mHz.textContent       = st.hz ? st.hz.toFixed(1) + ' 轮/秒' : '—';
   el.mCost.textContent     = st.scan_cost != null ? st.scan_cost.toFixed(3) + ' s' : '—';
   el.mBytes.textContent    = fmtBytes(st.scan_bytes);
   el.mWorkers.textContent  = (st.active_workers != null && st.workers != null)
                                ? `${st.active_workers} / ${st.workers}` : '—';
-  el.mIdle.textContent     = st.idle > 0 ? st.idle + ' s'
-                           : (st.idle === 0 ? '连续扫描' : '—');
+  const interval = st.min_interval_ms ?? (st.idle == null ? null : st.idle * 1000);
+  el.mIdle.textContent     = interval === 0 ? '0 ms · 连续扫描'
+                           : (interval == null ? '—' : interval + ' ms');
   el.mRounds.textContent   = st.rounds ?? 0;
   el.mCaptured.textContent = st.captured ?? S.responses.size;
   el.mPaired.textContent   = st.paired ?? 0;
@@ -316,6 +317,7 @@ function cardHtml(r){
     <div class="card-sub">
       <button type="button" class="rid" title="${esc(r.rid)} · 双击复制完整请求号" aria-label="请求号 ${esc(shortId(r.rid))}，双击或按回车复制完整请求号">${esc(shortId(r.rid))}</button>
       ${meta('effort', r.effort, effortCls)}
+      ${r.expect ? meta('采集时预期', r.expect) : ''}
       ${meta('格式', r.text_format)}
       ${meta('创建', r.created_at)}
       ${meta('完成', r.completed_at)}
@@ -329,7 +331,7 @@ function cardHtml(r){
 
 /* 卡片内容签名：这些字段任一变化才需要重建这张卡的内容 */
 function cardSig(r){
-  return [r.model, r.req_model, r.verdict, r.effort, r.status, r.text_format,
+  return [r.model, r.req_model, r.expect, r.verdict, r.effort, r.status, r.text_format,
           r.created_at, r.completed_at, r.duration_seconds, r.marks, r.updates,
           r.last_seen, r.pairing_status, r.suspect_reason].join('\u0002');
 }
@@ -516,21 +518,30 @@ function doConfig(){
   const st = S.stats;
   openModal('配置', `
     <div class="row"><label>预期模型</label>
-      <input id="cfg-expect" value="${esc(st.expect || '')}"></div>
-    <div class="row"><label>轮间空闲(s)</label>
-      <input id="cfg-idle" value="${esc(st.idle ?? 0)}"
-             placeholder="0 = 连续扫描，不歇"></div>
+      <input id="cfg-expect" value="${esc(st.expect || '')}" placeholder="留空时不主动标记子任务"></div>
+    <div class="row"><label>最小采样间隔(ms)</label>
+      <input id="cfg-interval" type="number" min="0" max="60000" step="any"
+             value="${esc(st.min_interval_ms ?? (st.idle || 0) * 1000)}" placeholder="0 = 连续扫描"></div>
+    <div class="row"><label>并行线程</label>
+      <input id="cfg-workers" type="number" min="1" max="16" step="1" value="${esc(st.workers ?? 4)}"></div>
     <p style="margin:0;color:var(--text-3)">
-      并行扫描线程数需重启生效（<code>--workers N</code>）；
-      轮间空闲可在此热调整。</p>
+      间隔从两轮开始时间计算，0 表示连续扫描。线程数在当前轮结束后生效。
+      保存后下次启动继续使用；预期模型只影响新记录，已有记录保留采集时的设置。</p>
   `, true);
 }
 
 async function saveConfig(){
   const expect = ($('cfg-expect')?.value || '').trim();
-  const idle = parseFloat($('cfg-idle')?.value);
-  const r = await post('/api/config', { expect, idle });
-  if (r && r.ok){ closeModal(); toast('配置已更新'); }
+  const intervalInput = $('cfg-interval'), workersInput = $('cfg-workers');
+  if (!intervalInput.value || !intervalInput.checkValidity() || !workersInput.value || !workersInput.checkValidity()){
+    toast('间隔须为 0～60000ms，线程数须为 1～16 的整数', true); return;
+  }
+  const min_interval_ms = Number(intervalInput.value), workers = Number(workersInput.value);
+  const r = await post('/api/config', { expect, min_interval_ms, workers });
+  if (r && r.ok){
+    if (r.stats) S.stats = r.stats;
+    markDirty(); closeModal(); toast('配置已保存');
+  } else if (r) toast(r.reason || '配置保存失败', true);
 }
 
 function bind(){

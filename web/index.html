@@ -14,7 +14,7 @@
   <div class="connection"><span class="dot" id="live-dot"></span><span class="pill" id="status-pill">连接中…</span></div>
   <div class="actions">
     <button class="abtn" id="btn-diag" title="查看最近一轮扫描统计">诊断</button>
-    <button class="abtn" id="btn-cfg" title="修改预期模型与采样间隔">配置</button>
+    <button class="abtn" id="btn-cfg" title="修改预期模型、最小采样间隔与并行线程">配置</button>
     <button class="abtn" id="btn-clear" title="清空当前运行日志显示，保留数据库历史">日志清屏</button>
     <button class="abtn danger" id="btn-stop" title="停止采集并退出服务">停止采集</button>
   </div>
@@ -36,7 +36,7 @@
     <span class="m"><em>单轮耗时</em><b id="m-cost">—</b></span>
     <span class="m"><em>单轮扫描量</em><b id="m-bytes">—</b></span>
     <span class="m"><em>扫描线程</em><b id="m-workers">—</b></span>
-    <span class="m"><em>轮间空闲</em><b id="m-idle">—</b></span>
+    <span class="m"><em>最小采样间隔</em><b id="m-idle">—</b></span>
     <span class="m"><em>轮数</em><b id="m-rounds">0</b></span>
     <span class="m"><em>最后采样</em><b id="m-last">—</b></span>
   </div>

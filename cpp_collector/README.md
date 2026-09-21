@@ -20,13 +20,15 @@ python start.py --backend python
 | `start-python.bat` / `--backend python` | 原 Python 扫描器 | 48766 |
 | 原 `start.bat`，不传后端参数 | Python，兼容已有入口 | 48766 |
 
+双击 `stop-cpp.bat` 可停止默认端口上的 C++ 模式实例；附加参数会继续传给启动器，例如 `stop-cpp.bat --port 48878`。
+
 端口占用时仍顺延最多 12 个端口。`--port` 可指定端口，启动器只复用选定后端；状态、停止命令也按后端筛选。
 
 ```powershell
 python start.py --backend cpp --status
 python start.py --backend cpp --stop
 python start.py --backend python --stop
-python start.py --backend cpp --workers 4 --idle 0.02 --no-open
+python start.py --backend cpp --workers 4 --min-interval-ms 20 --no-open
 ```
 
 切换已有运行实例：先停止旧 Python 后端，再启动 C++。两个后端可以在不同端口共存，但会重复扫描并增加负载；历史现在存储于共用的 `data/monitor.sqlite`，重启/切换后端会读取历史；旧版尚未入库的记录需先导入，见 [历史记录说明](../HISTORY.md)。修改代码不会自动更新已经运行的旧 Python 进程。前端“采集详情”可查看正在连接的后端。
@@ -56,11 +58,11 @@ python start.py --backend cpp --workers 4 --idle 0.02 --no-open
 | 固定 64 MiB 测试进程，均捕获 6 个唯一响应 | 56.553 ms | 5.654 ms | 10.00× |
 | 当时运行中的 Codex 引擎 | 340.474 ms | 24.474 ms | 13.91× |
 
-这些是特定机器和负载下的单轮延迟，不是通用提速保证，也不是整机 CPU 节省比例。C++ 扫描量包含重叠，且不再排除超过 256 MiB 的区域，所以读取字节量与 Python 不相同。真实进程的对象生命周期不同，不能用不同轮的记录数证明召回率相同；固定样本与边界单测用于验证覆盖情况。`--idle 0` 提速后会增加每秒扫描轮数，仍可能持续占用 CPU/内存带宽，想留出空闲可传 `--idle 0.02`。
+这些是特定机器和负载下的单轮延迟，不是通用提速保证，也不是整机 CPU 节省比例。C++ 扫描量包含重叠，且不再排除超过 256 MiB 的区域，所以读取字节量与 Python 不相同。真实进程的对象生命周期不同，不能用不同轮的记录数证明召回率相同；固定样本与边界单测用于验证覆盖情况。`--min-interval-ms 0` 连续扫描可能持续占用 CPU/内存带宽；想限制频率可增大最小采样间隔，例如 `--min-interval-ms 100`。间隔从两轮开始时间计算，不是在扫描后固定休息。
 
 ## 请求模型的配对
 
-保留原有核心机制：从内存里的 `response.create` 获取请求模型，按双方的 `previous_response_id` 关联；响应侧要求至少两个原有服务器标记，排除客户端请求。四级分类沿用原规则。
+保留原有核心机制：从内存里的 `response.create` 获取请求模型，按双方的 `previous_response_id` 关联；响应侧要求至少两个原有服务器标记，排除客户端请求。预期模型非空时沿用原分类规则；默认空值不主动标记子任务，历史记录固定使用首次采集时的预期模型。
 
 新增改进：
 

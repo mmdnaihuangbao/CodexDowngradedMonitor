@@ -17,9 +17,12 @@ Codex (codex.exe) 收到服务端 WebSocket 帧后会把响应对象反序列化
   1. 只读扫描（VirtualQueryEx + ReadProcessMemory），不注入、不提权
   2. 只认「服务端下发」的对象（命中 >=2 个服务端独占字段，且不含客户端请求特征）
   3. 降级 = 请求模型 ≠ 响应模型；配对依据 响应.prev == 请求.previous_response_id
-  4. luna / low 是正常子任务（标题生成、命令审查），不报警
+  4. 预期模型非空时保留子任务启发式；为空时不主动标记子任务
 
 四级分类：
+  每条响应固定使用首次采集时的预期模型；旧库缺失此字段时保留原分类。
+  预期模型为空时：已配对且模型一致为正常，不一致为降级，未配对为不完整。
+  预期模型非空时：
   normal      请求模型 == 响应模型 == 预期模型                  → 绿
   subtask     请求模型 == 响应模型 != 预期模型（luna/low）      → 黄，不报警
   downgrade   请求模型 ≠ 响应模型                              → 红，报警
@@ -45,16 +48,16 @@ HTTP 接口
     GET  /api/snapshot     全量状态快照（JSON）—— 读状态库
     GET  /api/stream       SSE 增量推送：snapshot 首帧 + patch 后续
     GET  /api/diagnose     只读回放最近一轮扫描观测（不触发扫描）
-    POST /api/config       修改 {expect, idle}
+    POST /api/config       保存 {expect, min_interval_ms, workers} 到 config.json
     POST /api/clear        清空已捕获数据
     POST /api/shutdown     停止服务
 
 用法
 ----
-    python collector.py                     # 默认 127.0.0.1:48766，自动打开浏览器
+    python collector.py                     # 默认 localhost:48766，自动打开浏览器
     python collector.py --port 9000
     python collector.py --workers 6         # 并行扫描线程数
-    python collector.py --idle 0.1          # 轮间歇 0.1s（默认 0 = 连续扫）
+    python collector.py --min-interval-ms 100 # 最小采样间隔，默认 0ms = 连续扫
     python collector.py --expect gpt-6-astra
     python collector.py --no-open           # 不自动开浏览器
     python collector.py --log run.log
@@ -64,6 +67,7 @@ import argparse
 import ctypes
 import ctypes.wintypes as wt
 import json
+import math
 import os
 import queue
 import re
@@ -75,6 +79,7 @@ from datetime import datetime
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import urlparse, parse_qs
 from history_store import HistoryStore, DEFAULT_DB, validation_reason
+from config_store import load_config, save_config, validate_config, browser_host, CONFIG_VERSION
 
 # ==================================================================
 # 0. 静默化 —— 本进程绝不向控制台写任何东西
@@ -537,7 +542,7 @@ class Monitor:
         self.lock = threading.RLock()
         self.broker = Broker()
         self.expect = expect
-        self.idle = max(0.0, float(interval))   # 两轮扫描之间的空闲秒数（0 = 连续扫描）
+        self.min_interval_ms = max(0.0, float(interval)) * 1000
         self.workers = max(1, int(workers))
         self.backend = backend
         self.logfile = logfile
@@ -573,6 +578,7 @@ class Monitor:
         self._last_pub_at = 0.0      # 上次心跳广播时刻
         self._last_pub_status = None
         self._stop = threading.Event()
+        self._config_changed = threading.Condition(self.lock)
         self._scan_lock = threading.Lock()
         self.seen = {r["response_id"]: r for r in self.store.recent(MAX_RESPONSES)}
         self.rid_kind = {rid: r.get("_verdict", "incomplete") for rid, r in self.seen.items()}
@@ -621,17 +627,22 @@ class Monitor:
             if found: self.req_models[prev] = model_evidence
         req_model = self.req_models.get(prev) if prev else None
 
+        # 旧库没有记录采集时的目标模型，不能用今天的配置猜测并重写历史分类。
+        if "_expect" not in rec and "_verdict" in rec:
+            return rec["_verdict"], req_model
+        expect = rec.get("_expect", self.expect)
+
         if req_model is not None:
             if req_model != model:
                 return "downgrade", req_model
-            if req_model == self.expect:
+            if not expect or req_model == expect:
                 return "normal", req_model
             return "subtask", req_model
 
         # 配对失败：回退启发式
-        if model == self.expect:
+        if expect and model == expect:
             return "normal", None
-        if effort == SUBTASK_EFFORT:
+        if expect and effort == SUBTASK_EFFORT:
             return "subtask", None
         return "incomplete", None
 
@@ -646,7 +657,7 @@ class Monitor:
         return "matched_previous_response_id"
 
     # ---------------- 去重 ----------------
-    def handle(self, rec):
+    def handle(self, rec, expect=None):
         rid = rec["response_id"]
         now = time.time()
         old = self.seen.get(rid)
@@ -657,6 +668,7 @@ class Monitor:
                 self.rid_kind[rid] = old.get("_verdict", "incomplete")
 
         if old is None:
+            rec["_expect"] = self.expect if expect is None else expect
             rec["_process_pid"] = self.pid
             rec["_first_seen"] = now
             rec["_last_seen"] = now
@@ -719,7 +731,7 @@ class Monitor:
                 "rid": rid,
                 "model": rec.get("model"),
                 "req_model": req_model,
-                "expect": self.expect,
+                "expect": rec.get("_expect"),
                 "effort": rec.get("effort"),
                 "status": rec.get("status"),
                 "prev": rec.get("prev"),
@@ -748,6 +760,7 @@ class Monitor:
             "rid": rec.get("response_id"),
             "model": rec.get("model"),
             "req_model": rec.get("_req_model"),
+            "expect": rec.get("_expect"),
             "pairing_status": rec.get("_pairing_status"),
             "suspect_reason": rec.get("_suspect_reason"),
             "verdict": rec.get("_verdict", "normal"),
@@ -771,7 +784,8 @@ class Monitor:
             "status": self.status,
             "pid": self.pid,
             "expect": self.expect,
-            "idle": self.idle,
+            "min_interval_ms": self.min_interval_ms,
+            "idle": self.min_interval_ms / 1000,  # 旧客户端的秒单位别名，语义同最小间隔。
             "workers": self.workers,
             "active_workers": self.active_workers,
             "regions": self.regions,
@@ -786,6 +800,8 @@ class Monitor:
             "request_keys": len(self.req_models),
             "ambiguous_pairings": sum(v is None for v in self.req_models.values()),
             "backend": self.backend,
+            "config_version": CONFIG_VERSION,
+            "data_version": self.store.data_version,
             "clients": self.broker.count(),
             "up": round(time.time() - self.started_at, 1),
             "server_time": time.time(),
@@ -817,7 +833,10 @@ class Monitor:
 
     # ---------------- 进程连接 ----------------
     def _ensure_process(self):
-        if self.scanner is not None and self.scanner.is_alive():
+        with self.lock:
+            workers = self.workers
+        alive = self.scanner is not None and self.scanner.is_alive()
+        if alive and self.scanner.workers == workers:
             return True
 
         if self.scanner is not None:
@@ -826,7 +845,10 @@ class Monitor:
             self.pid = None
             self.status = "no_process"
             self._probe_after = 0.0
-            self.log("warn", "codex.exe 已退出，等待重新出现…")
+            if alive:
+                self.log("info", f"应用扫描线程配置：{workers}，重建扫描器")
+            else:
+                self.log("warn", "codex.exe 已退出，等待重新出现…")
 
         # 退避：没有目标时降低 Windows API 枚举频率。
         now = time.time()
@@ -848,9 +870,9 @@ class Monitor:
 
         if self.backend == "cpp":
             from native_scanner import NativeScanner
-            sc = NativeScanner(pid, self.workers)
+            sc = NativeScanner(pid, workers)
         else:
-            sc = ParallelScanner(pid, self.workers)
+            sc = ParallelScanner(pid, workers)
         if not sc.open():
             self.status = "denied"
             self._probe_after = now + DENIED_BACKOFF
@@ -885,6 +907,8 @@ class Monitor:
             return False
 
         t0 = time.time()
+        with self.lock:
+            capture_expect = self.expect
         resps, reqs = [], []
         native_metrics = {}
         hits = [0]
@@ -938,7 +962,7 @@ class Monitor:
             items = []
             seen_rids = set()
             for rec in resps:
-                kind, r = self.handle(rec)
+                kind, r = self.handle(rec, capture_expect)
                 if not kind:
                     continue
                 alert = self.apply_verdict(r, kind)
@@ -1030,23 +1054,35 @@ class Monitor:
     def run(self):
         self.status = "starting"
         self.log("info", f"采集线程启动 · 预期模型={self.expect} · "
-                         f"扫描线程={self.workers} · 轮间空闲={self.idle}s"
-                         + ("（连续扫描）" if self.idle <= 0 else ""))
+                         f"扫描线程={self.workers} · 最小采样间隔={self.min_interval_ms}ms")
+        last_start = None
+        probe_after = 0.0
         while not self._stop.is_set():
+            with self._config_changed:
+                while not self._stop.is_set():
+                    deadline = probe_after if last_start is None else last_start + self.min_interval_ms / 1000
+                    remaining = deadline - time.monotonic()
+                    if remaining <= 0:
+                        break
+                    # 配置变化时重算截止时间；停止也唤醒此条件，不用固定延迟套轮询。
+                    self._config_changed.wait(remaining)
+                if self._stop.is_set():
+                    break
             scanned = False
+            started = time.monotonic()
             try:
                 with self._scan_lock:
                     scanned = self.tick()
             except Exception as e:
                 self.log("error", f"采样循环异常: {e}")
-            # 真扫过 → 按 idle 歇；没有可扫的进程 → 按 NO_PROCESS_WAIT 歇，
-            # 否则 idle=0 时会变成 100% 占核的空转。
-            wait = self.idle if scanned else NO_PROCESS_WAIT
-            if wait > 0:
-                self._stop.wait(wait)
+            last_start = started if scanned else None
+            # 没有可扫描进程时保持原有退避，0ms 不能造成空转。
+            probe_after = time.monotonic() + NO_PROCESS_WAIT
 
     def stop(self):
-        self._stop.set()
+        with self._config_changed:
+            self._stop.set()
+            self._config_changed.notify_all()
         with self._scan_lock:
             if self.scanner:
                 self.scanner.close()
@@ -1206,18 +1242,46 @@ class Handler(BaseHTTPRequestHandler):
 
         if path == "/api/config":
             body = self._body_json()
-            with m.lock:
-                if isinstance(body.get("expect"), str) and body["expect"].strip():
-                    m.expect = body["expect"].strip()
-                raw = body.get("idle", body.get("interval"))
-                try:
+            try:
+                if not isinstance(body, dict):
+                    raise ValueError("配置必须是 JSON 对象")
+                updates = {}
+                if "expect" in body:
+                    if not isinstance(body["expect"], str):
+                        raise ValueError("预期模型必须是字符串，可留空")
+                    updates["expect"] = body["expect"].strip()
+                if any(k in body for k in ("min_interval_ms", "idle", "interval")):
+                    raw = body.get("min_interval_ms", body.get("idle", body.get("interval")))
                     iv = float(raw)
-                    if 0.0 <= iv <= 60:
-                        m.idle = iv
-                except (TypeError, ValueError):
-                    pass
+                    if "min_interval_ms" not in body:
+                        iv *= 1000
+                    if isinstance(raw, bool) or not math.isfinite(iv) or not 0 <= iv <= 60000:
+                        raise ValueError("最小采样间隔须为 0～60000ms")
+                    updates["min_interval_ms"] = iv
+                if "workers" in body:
+                    raw = body["workers"]
+                    workers = float(raw)
+                    if isinstance(raw, bool) or not math.isfinite(workers) or not workers.is_integer() or not 1 <= workers <= 16:
+                        raise ValueError("并行线程数须为 1～16 的整数")
+                    updates["workers"] = int(workers)
+            except (ValueError, TypeError, OverflowError) as exc:
+                self._json({"ok": False, "reason": str(exc)}, 400)
+                return
+            with m._config_changed:
+                try:
+                    # 文件写入成功后才切换内存配置；保存失败不能显示成功或只生效一半。
+                    save_config({"expect": m.expect, "min_interval_ms": m.min_interval_ms,
+                                 "workers": m.workers, **updates})
+                except (OSError, ValueError) as exc:
+                    self._json({"ok": False, "reason": f"保存配置失败：{exc}"}, 500)
+                    return
+                for key, value in updates.items():
+                    setattr(m, key, value)
+                m._config_changed.notify_all()
                 stats = m.stats()
-            m.log("info", f"配置已更新 · 预期模型={m.expect} · 轮间空闲={m.idle}s")
+            m.log("info", f"配置已更新 · 预期模型={m.expect or '未设置'} · "
+                          f"最小采样间隔={m.min_interval_ms}ms · 扫描线程={m.workers}")
+            m.broker.publish({"type": "patch", "stats": stats})
             self._json({"ok": True, "stats": stats})
 
         elif path == "/api/clear":
@@ -1264,14 +1328,21 @@ class Handler(BaseHTTPRequestHandler):
             self.wfile.flush()
 
         last_ping = time.time()
+        last_stats = time.monotonic()
         try:
             frame({"type": "snapshot", "data": m.snapshot()})
             while not m._stop.is_set():
                 try:
-                    msg = q.get(timeout=1.0)
+                    msg = q.get(timeout=max(0, min(1.0, 2.0 - (time.monotonic() - last_stats))))
                     frame(msg)
                 except queue.Empty:
                     pass
+                # 两秒统计心跳由 SSE 线程驱动，不依赖新增记录、扫描结束或采样间隔。
+                if time.monotonic() - last_stats >= 2.0:
+                    with m.lock:
+                        stats = m.stats()
+                    frame({"type": "patch", "stats": stats})
+                    last_stats = time.monotonic()
                 if time.time() - last_ping > 15:
                     self.wfile.write(b": ping\n\n")
                     self.wfile.flush()
@@ -1288,7 +1359,7 @@ class Handler(BaseHTTPRequestHandler):
 # ==================================================================
 
 class LocalHTTPServer(ThreadingHTTPServer):
-    """本地专用 HTTP 服务。
+    """按配置监听 localhost 或局域网的 HTTP 服务。
 
     allow_reuse_address 必须关掉：Windows 上它等价于 SO_REUSEADDR，
     会让第二个实例"成功"绑到已被占用的端口上（而不是报错），
@@ -1300,7 +1371,7 @@ class LocalHTTPServer(ThreadingHTTPServer):
 
 def serve(host, port, handler_cls, max_tries=12):
     last = None
-    for p in range(port, port + max_tries):
+    for p in range(port, min(65536, port + max_tries)):
         try:
             return LocalHTTPServer((host, p), handler_cls), p
         except OSError as e:
@@ -1309,18 +1380,26 @@ def serve(host, port, handler_cls, max_tries=12):
 
 
 def main():
+    try:
+        config = load_config()
+    except (OSError, ValueError) as exc:
+        # 直接运行 collector.py 时控制台静默，错误仍保留在原有日志文件。
+        with open(os.path.join(os.path.dirname(__file__), "collector.log"), "a", encoding="utf-8") as stream:
+            stream.write(f"配置读取失败：{exc}\n")
+        return 2
     ap = argparse.ArgumentParser(
         description="Codex 模型降级监控 · 常驻采集器 + 本地 HTTP 视图服务（静默，无控制台输出）")
     ap.add_argument("--db", default=DEFAULT_DB, help="SQLite 历史库路径；两种后端默认共用 data/monitor.sqlite")
     ap.add_argument("--backend", choices=("python", "cpp"), default="python")
-    ap.add_argument("--host", default="127.0.0.1")
+    ap.add_argument("--host", default=config["host"], help="HTTP 监听地址，0.0.0.0 支持局域网访问")
     ap.add_argument("--port", type=int, default=None)
-    ap.add_argument("--expect", default="gpt-6-astra",
-                    help="预期模型（默认 gpt-6-astra）")
-    ap.add_argument("--workers", type=int, default=4,
+    ap.add_argument("--expect", default=config["expect"],
+                    help="预期模型（默认读取配置，留空不主动标记子任务）")
+    ap.add_argument("--workers", type=int, default=config["workers"],
                     help="并行扫描线程数（默认 4，每个线程一个独立进程句柄）")
-    ap.add_argument("--idle", type=float, default=0.0,
-                    help="两轮扫描之间的空闲秒数（默认 0 = 连续扫描，不歇）")
+    ap.add_argument("--min-interval-ms", type=float, default=None, help="最小采样间隔，单位 ms（默认读取 config.json）")
+    ap.add_argument("--idle", type=float, default=config["min_interval_ms"] / 1000,
+                    help="最小采样间隔的秒单位别名，0 = 连续扫描")
     ap.add_argument("--interval", type=float, default=None,
                     help="--idle 的别名（兼容旧命令）")
     ap.add_argument("--log", default=os.path.join(
@@ -1328,17 +1407,26 @@ def main():
         help="日志文件（控制台不输出，日志只落文件 + 前端）")
     ap.add_argument("--no-open", action="store_true", help="不自动打开浏览器")
     args = ap.parse_args()
-    if args.port is None: args.port = 48778 if args.backend == "cpp" else 48766
+    if args.port is None: args.port = config["cpp_port" if args.backend == "cpp" else "port"]
 
-    idle = args.idle if args.interval is None else max(0.0, args.interval)
-    workers = max(1, min(16, args.workers))
+    idle = args.idle if args.interval is None else args.interval
+    if args.min_interval_ms is not None:
+        idle = args.min_interval_ms / 1000
+    if not math.isfinite(idle) or not 0 <= idle <= 60:
+        ap.error("最小采样间隔须为 0～60000ms")
+    try:
+        effective = validate_config({"expect": args.expect, "workers": args.workers, "min_interval_ms": idle * 1000,
+                                     "host": args.host, "port": args.port})
+    except ValueError as exc:
+        ap.error(str(exc))
+    workers = effective["workers"]
 
     # ---- 采集器：先于 HTTP 服务构造并启动，与 HTTP 完全解耦 ----
     if args.backend == "cpp":
         from native_scanner import EXECUTABLE
         if not os.path.isfile(EXECUTABLE):
             return 4
-    monitor = Monitor(args.expect, idle, args.log, workers=workers, backend=args.backend, db_path=args.db)
+    monitor = Monitor(effective["expect"], idle, args.log, workers=workers, backend=args.backend, db_path=args.db)
     Handler.monitor = monitor
 
     worker = threading.Thread(target=monitor.run, name="collector", daemon=True)
@@ -1352,8 +1440,8 @@ def main():
         monitor.stop()
         return 3
 
-    url = f"http://{args.host}:{real_port}/"
-    monitor.log("info", f"HTTP 视图服务监听 {url}"
+    url = f"http://{browser_host(args.host)}:{real_port}/"
+    monitor.log("info", f"HTTP 视图服务监听 {args.host}:{real_port} · 面板 {url}"
                         + ("" if real_port == args.port
                            else f"（端口 {args.port} 被占用，已改用 {real_port}）"))
     if real_port != args.port:
