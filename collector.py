@@ -67,14 +67,14 @@ import json
 import os
 import queue
 import re
-import subprocess
 import sys
 import threading
 import time
 from collections import deque
 from datetime import datetime
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-from urllib.parse import urlparse
+from urllib.parse import urlparse, parse_qs
+from history_store import HistoryStore, DEFAULT_DB, validation_reason
 
 # ==================================================================
 # 0. 静默化 —— 本进程绝不向控制台写任何东西
@@ -136,7 +136,6 @@ MEM_COMMIT = 0x1000
 PAGE_NOACCESS = 0x01
 PAGE_GUARD = 0x100
 MAX_REGION = 256 << 20
-WAIT_TIMEOUT = 0x00000102
 
 
 class MEMORY_BASIC_INFORMATION(ctypes.Structure):
@@ -166,6 +165,18 @@ class ProcessScanner:
     def __init__(self, pid):
         self.pid = pid
         self.k32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        self.k32.OpenProcess.argtypes = [wt.DWORD, wt.BOOL, wt.DWORD]
+        self.k32.OpenProcess.restype = wt.HANDLE
+        self.k32.CloseHandle.argtypes = [wt.HANDLE]
+        self.k32.CloseHandle.restype = wt.BOOL
+        self.k32.GetExitCodeProcess.argtypes = [wt.HANDLE, ctypes.POINTER(wt.DWORD)]
+        self.k32.GetExitCodeProcess.restype = wt.BOOL
+        self.k32.VirtualQueryEx.argtypes = [wt.HANDLE, ctypes.c_void_p,
+                                            ctypes.POINTER(MEMORY_BASIC_INFORMATION), ctypes.c_size_t]
+        self.k32.VirtualQueryEx.restype = ctypes.c_size_t
+        self.k32.ReadProcessMemory.argtypes = [wt.HANDLE, ctypes.c_void_p, ctypes.c_void_p,
+                                              ctypes.c_size_t, ctypes.POINTER(ctypes.c_size_t)]
+        self.k32.ReadProcessMemory.restype = wt.BOOL
         self.buf = ctypes.create_string_buffer(self.CHUNK)
         self.h = None
 
@@ -183,11 +194,12 @@ class ProcessScanner:
             self.h = None
 
     def is_alive(self):
-        """进程是否仍在运行（句柄上等 0ms，超时即存活）"""
+        """只查询退出码；不对缺少 SYNCHRONIZE 权限的句柄执行等待。"""
         if not self.h:
             return False
         try:
-            return self.k32.WaitForSingleObject(self.h, 0) == WAIT_TIMEOUT
+            code = wt.DWORD()
+            return bool(self.k32.GetExitCodeProcess(self.h, ctypes.byref(code))) and code.value == 259
         except Exception:
             return False
 
@@ -410,8 +422,8 @@ RE_REQ_PREV = re.compile(rb'"previous_response_id"\s*:\s*"(resp_[0-9a-zA-Z_\-]+)
 
 SUBTASK_EFFORT = "low"
 
-STATUS_RANK = {"failed": 1, "incomplete": 1, "cancelled": 1,
-               "in_progress": 2, "completed": 3}
+STATUS_RANK = {"queued": 1, "in_progress": 2, "failed": 3, "incomplete": 3,
+               "cancelled": 3, "completed": 4}
 
 VERDICT_TAG = {"normal": "正常", "subtask": "子任务",
                "downgrade": "降级", "incomplete": "不完整"}
@@ -456,43 +468,10 @@ def extract_responses(chunk):
 # 3. 进程枚举
 # ==================================================================
 
-_CREATE_NO_WINDOW = 0x08000000 if os.name == "nt" else 0
-
-
 def enumerate_codex():
-    """一次 PowerShell 调用拿到全部 codex.exe：[{pid, cmd, mb}]"""
-    ps = (
-        "Get-CimInstance Win32_Process -Filter \"Name='codex.exe'\" | "
-        "Select-Object ProcessId,CommandLine,WorkingSetSize | "
-        "ConvertTo-Json -Compress"
-    )
-    try:
-        r = subprocess.run(
-            ["powershell", "-NoProfile", "-NonInteractive", "-Command", ps],
-            capture_output=True, text=True, timeout=15,
-            encoding="utf-8", errors="replace",
-            creationflags=_CREATE_NO_WINDOW)
-        out = (r.stdout or "").strip()
-        if not out:
-            return []
-        data = json.loads(out)
-        if isinstance(data, dict):
-            data = [data]
-        res = []
-        for p in data:
-            try:
-                pid = int(p.get("ProcessId"))
-            except (TypeError, ValueError):
-                continue
-            ws = p.get("WorkingSetSize") or 0
-            res.append({
-                "pid": pid,
-                "cmd": (p.get("CommandLine") or "").strip(),
-                "mb": round(ws / 1048576.0, 1),
-            })
-        return res
-    except Exception:
-        return []
+    """Toolhelp32 / QueryFullProcessImageName：不启动 PowerShell 子进程。"""
+    from process_discovery import enumerate_codex as discover
+    return discover()
 
 
 def pick_pid(cands):
@@ -502,7 +481,8 @@ def pick_pid(cands):
     for c in cands:
         if "app-server" in (c.get("cmd") or ""):
             return c["pid"]
-    return max(cands, key=lambda c: c.get("mb") or 0)["pid"]
+    engines = [c for c in cands if c.get("name") == "codex.exe"]
+    return max(engines or cands, key=lambda c: c.get("mb") or 0)["pid"]
 
 
 # ==================================================================
@@ -553,13 +533,16 @@ NO_PROCESS_WAIT = 0.5     # 没有可扫进程时，采集线程每轮歇多久
 
 
 class Monitor:
-    def __init__(self, expect, interval, logfile=None, workers=4):
+    def __init__(self, expect, interval, logfile=None, workers=4, backend="python", db_path=":memory:"):
         self.lock = threading.RLock()
         self.broker = Broker()
         self.expect = expect
         self.idle = max(0.0, float(interval))   # 两轮扫描之间的空闲秒数（0 = 连续扫描）
         self.workers = max(1, int(workers))
+        self.backend = backend
         self.logfile = logfile
+        self.store = HistoryStore(db_path)
+        self._pending_archive = None
 
         self.scanner = None
         self.seen = {}
@@ -591,6 +574,11 @@ class Monitor:
         self._last_pub_status = None
         self._stop = threading.Event()
         self._scan_lock = threading.Lock()
+        self.seen = {r["response_id"]: r for r in self.store.recent(MAX_RESPONSES)}
+        self.rid_kind = {rid: r.get("_verdict", "incomplete") for rid, r in self.seen.items()}
+        self.req_models = self.store.request_models()
+        self.count = dict(self.store.totals()["counts"])
+        self.logs.extend(self.store.recent_logs())
 
     # ---------------- 日志（不落控制台，只落内存 + 文件） ----------------
     def log(self, level, msg):
@@ -604,6 +592,11 @@ class Monitor:
                              f"{level.upper():<5} {msg}\n")
             except Exception:
                 pass
+        try:
+            self.store.log(line, self.backend)
+        except Exception as exc:
+            # A storage failure must not also kill the collector's error-reporting path.
+            line["msg"] += f"（日志写库失败：{exc}）"
         self.broker.publish({"type": "patch", "logs": [line]})
 
     # ---------------- 分类（判据与原脚本一致，另加「不完整」一级） ----------------
@@ -623,6 +616,9 @@ class Monitor:
         model = rec.get("model")
         effort = rec.get("effort")
         prev = rec.get("prev")
+        if prev and prev not in self.req_models:
+            found, model_evidence = self.store.lookup_request(prev)
+            if found: self.req_models[prev] = model_evidence
         req_model = self.req_models.get(prev) if prev else None
 
         if req_model is not None:
@@ -639,13 +635,29 @@ class Monitor:
             return "subtask", None
         return "incomplete", None
 
+    def pairing_status(self, rec):
+        prev = rec.get("prev")
+        if not prev:
+            return "no_previous_response_id"
+        if prev not in self.req_models:
+            return "request_not_captured"
+        if self.req_models[prev] is None:
+            return "ambiguous_previous_response_id"
+        return "matched_previous_response_id"
+
     # ---------------- 去重 ----------------
     def handle(self, rec):
         rid = rec["response_id"]
         now = time.time()
         old = self.seen.get(rid)
+        if old is None:
+            old = self.store.get(rid)
+            if old is not None:
+                self.seen[rid] = old
+                self.rid_kind[rid] = old.get("_verdict", "incomplete")
 
         if old is None:
+            rec["_process_pid"] = self.pid
             rec["_first_seen"] = now
             rec["_last_seen"] = now
             rec["_updates"] = 0
@@ -667,7 +679,7 @@ class Monitor:
             self.seen[rid] = merged
             return "update", merged
 
-        return None, rec
+        return None, old
 
     def _evict(self):
         if len(self.seen) <= MAX_RESPONSES:
@@ -675,14 +687,16 @@ class Monitor:
         order = sorted(self.seen.items(), key=lambda kv: kv[1].get("_first_seen", 0))
         for rid, _ in order[:len(self.seen) - MAX_RESPONSES]:
             self.seen.pop(rid, None)
-            self.req_models.pop(rid, None)
+            self.rid_kind.pop(rid, None)
 
     # ---------------- 判定 + 计数 + 告警 ----------------
     def apply_verdict(self, rec, kind):
         rid = rec["response_id"]
         verdict, req_model = self.classify(rec)
+        rec["_suspect_reason"] = validation_reason(rec)
         rec["_verdict"] = verdict
         rec["_req_model"] = req_model
+        rec["_pairing_status"] = self.pairing_status(rec)
 
         prev_verdict = self.rid_kind.get(rid)
         if kind == "new":
@@ -695,7 +709,10 @@ class Monitor:
             self.rid_kind[rid] = verdict
 
         new_alert = None
-        if verdict == "downgrade" and prev_verdict != "downgrade":
+        if verdict != "downgrade" or rec.get("_suspect_reason"):
+            # New contradictory evidence invalidates the earlier alert in snapshots.
+            self.alerts[:] = [a for a in self.alerts if a["rid"] != rid]
+        if verdict == "downgrade" and prev_verdict != "downgrade" and not rec.get("_suspect_reason"):
             self._alert_seq += 1
             new_alert = {
                 "seq": self._alert_seq,
@@ -731,6 +748,8 @@ class Monitor:
             "rid": rec.get("response_id"),
             "model": rec.get("model"),
             "req_model": rec.get("_req_model"),
+            "pairing_status": rec.get("_pairing_status"),
+            "suspect_reason": rec.get("_suspect_reason"),
             "verdict": rec.get("_verdict", "normal"),
             "effort": rec.get("effort"),
             "status": rec.get("status"),
@@ -747,6 +766,7 @@ class Monitor:
         }
 
     def stats(self):
+        totals = self.store.totals()
         return {
             "status": self.status,
             "pid": self.pid,
@@ -761,9 +781,11 @@ class Monitor:
             "scan_cost": round(self.scan_cost, 4),
             "scan_bytes": self.scan_bytes,
             "last_scan": self.last_scan,
-            "counts": dict(self.count),
-            "captured": len(self.seen),
-            "paired": len(self.req_models),
+            **totals,
+            "database": self.store.path,
+            "request_keys": len(self.req_models),
+            "ambiguous_pairings": sum(v is None for v in self.req_models.values()),
+            "backend": self.backend,
             "clients": self.broker.count(),
             "up": round(time.time() - self.started_at, 1),
             "server_time": time.time(),
@@ -771,15 +793,19 @@ class Monitor:
 
     def snapshot(self):
         with self.lock:
-            recs = [self.ser(r) for r in self.seen.values()]
-            recs.sort(key=lambda r: r.get("last_seen") or 0, reverse=True)
+            page = self.query_responses()
             return {
                 "stats": self.stats(),
-                "responses": recs,
+                **page,
                 "alerts": list(self.alerts),
                 "logs": list(self.logs),
                 "candidates": list(self.candidates),
             }
+
+    def query_responses(self, **kwargs):
+        page = self.store.query(**kwargs)
+        page["responses"] = [self.ser(r) for r in page["responses"]]
+        return page
 
     def patch(self, upserts, new_alerts):
         return {
@@ -802,8 +828,7 @@ class Monitor:
             self._probe_after = 0.0
             self.log("warn", "codex.exe 已退出，等待重新出现…")
 
-        # 退避：枚举进程要拉一次 PowerShell（约几百毫秒），
-        # 不能每轮采样都做，否则空转时会把 CPU 打满。
+        # 退避：没有目标时降低 Windows API 枚举频率。
         now = time.time()
         if now < self._probe_after:
             return False
@@ -821,19 +846,24 @@ class Monitor:
                 self.log("info", "未发现运行中的 codex.exe，持续等待中…")
             return False
 
-        sc = ParallelScanner(pid, self.workers)
+        if self.backend == "cpp":
+            from native_scanner import NativeScanner
+            sc = NativeScanner(pid, self.workers)
+        else:
+            sc = ParallelScanner(pid, self.workers)
         if not sc.open():
             self.status = "denied"
             self._probe_after = now + DENIED_BACKOFF
             self.log("error", f"打开进程失败 pid={pid}（可能需要以管理员身份运行）")
             return False
 
+        self.req_models = self.store.request_models()
         self.scanner = sc
         self.pid = pid
         self.status = "running"
         cmd = next((c["cmd"] for c in cands if c["pid"] == pid), "")
         self.log("info", f"已连接 codex.exe  pid={pid}  "
-                         f"扫描线程={self.workers}  "
+                         f"后端={self.backend} · 扫描线程={self.workers}  "
                          f"{'(app-server)' if 'app-server' in cmd else ''}")
         return True
 
@@ -845,21 +875,34 @@ class Monitor:
         注意：这是「采集」这一步，只由采集线程调用；
         HTTP 层永远不会调用它 —— 服务层只读状态库。
         """
+        # Retry an uncommitted batch before reading more memory. Cached response state
+        # has already advanced, so discarding this batch would silently lose history.
+        if self._pending_archive is not None:
+            self.store.save_batch(*self._pending_archive)
+            self._pending_archive = None
         if not self._ensure_process():
             self._publish_heartbeat()
             return False
 
         t0 = time.time()
-        resps, reqs = [], {}
+        resps, reqs = [], []
+        native_metrics = {}
         hits = [0]
 
         def consume(data):
             hits[0] += 1
             resps.extend(extract_responses(data))
-            reqs.update(extract_requests(data))
+            reqs.extend({"prev": prev, "model": model} for prev, model in extract_requests(data).items())
 
         try:
-            nbytes = self.scanner.sweep(consume)
+            if self.backend == "cpp":
+                batch = self.scanner.sweep_records()
+                resps, reqs = batch["responses"], batch["requests"]
+                hits[0] = batch["hit_blocks"]
+                nbytes = batch["bytes"]
+                native_metrics = dict(self.scanner.metrics)
+            else:
+                nbytes = self.scanner.sweep(consume)
         except Exception as e:
             self.log("error", f"扫描异常: {e}")
             try:
@@ -869,10 +912,27 @@ class Monitor:
             self.scanner = None
             return
 
-        upserts, new_alerts = [], []
+        upserts, new_alerts, changed_records = [], [], []
         now = time.time()
         with self.lock:
-            self.req_models.update(reqs)
+            # A predecessor is not a unique request ID (forks/retries can reuse it).
+            # Conflicting models remain ambiguous rather than last-writer-wins.
+            evidence_changed = set()
+            for request in reqs:
+                prev, model = request.get("prev"), request.get("model")
+                if not prev or not model:
+                    continue
+                if prev not in self.req_models:
+                    found, stored_model = self.store.lookup_request(prev)
+                    if found: self.req_models[prev] = stored_model
+                if prev not in self.req_models or (self.req_models[prev] is not None and self.req_models[prev] != model):
+                    evidence_changed.add(prev)
+                if prev in self.req_models and self.req_models[prev] != model:
+                    self.req_models[prev] = None
+                else:
+                    self.req_models[prev] = model
+            while len(self.req_models) > MAX_RESPONSES * 2:
+                self.req_models.pop(next(iter(self.req_models)))
 
             # 本轮原始观测留一份，供「诊断」只读回放（服务层不触发扫描）
             items = []
@@ -884,6 +944,7 @@ class Monitor:
                 alert = self.apply_verdict(r, kind)
                 if alert:
                     new_alerts.append(alert)
+                changed_records.append(dict(r))
                 s = self.ser(r)
                 upserts.append(s)
                 if s["rid"] not in seen_rids and len(items) < 200:
@@ -894,6 +955,27 @@ class Monitor:
                         "status": s["status"], "marks": s["marks"],
                     })
 
+            # Late request evidence must update cards even if response status is unchanged.
+            changed_rids = {row["rid"] for row in upserts}
+            late_records = self.store.for_previous(evidence_changed)
+            late_records.update({rid:r for rid,r in self.seen.items() if r.get("prev") in evidence_changed})
+            for r in late_records.values():
+                if r["response_id"] in changed_rids:
+                    continue
+                verdict, model = self.classify(r)
+                pairing = self.pairing_status(r)
+                if (verdict, model, pairing) != (r.get("_verdict"), r.get("_req_model"), r.get("_pairing_status")):
+                    self.rid_kind.setdefault(r["response_id"], r.get("_verdict", "incomplete"))
+                    alert = self.apply_verdict(r, "update")
+                    if alert: new_alerts.append(alert)
+                    changed_records.append(dict(r))
+                    upserts.append(self.ser(r))
+
+            self._pending_archive = (changed_records, reqs, self.backend)
+            self.store.save_batch(*self._pending_archive)
+            self._pending_archive = None
+            self.count = dict(self.store.totals()["counts"])
+            self._evict()
             self.last_sweep = {
                 "ts": now_str(), "wall": now,
                 "cost": round(now - t0, 4),
@@ -904,6 +986,10 @@ class Monitor:
                 "hit_blocks": hits[0],
                 "raw_responses": len(resps),
                 "raw_requests": len(reqs),
+                "unkeyed_requests": sum(not r.get("prev") for r in reqs),
+                "ambiguous_pairings": sum(v is None for v in self.req_models.values()),
+                "backend": self.backend,
+                "native": native_metrics,
                 "upserts": len(upserts),
                 "items": items,
             }
@@ -961,8 +1047,10 @@ class Monitor:
 
     def stop(self):
         self._stop.set()
-        if self.scanner:
-            self.scanner.close()
+        with self._scan_lock:
+            if self.scanner:
+                self.scanner.close()
+                self.scanner = None
         with self.lock:
             self.status = "stopped"
 
@@ -1090,10 +1178,22 @@ class Handler(BaseHTTPRequestHandler):
             self._json(m.snapshot())
         elif path == "/api/stream":
             self._sse()
+        elif path == "/api/responses":
+            try:
+                query = parse_qs(urlparse(self.path).query)
+                def arg(key, default=None): return query.get(key, [default])[0]
+                data = m.query_responses(page=int(arg("page", "1")),
+                    page_size=int(arg("page_size", "50")), filter=arg("filter", "all"),
+                    q=arg("q", ""), start=float(arg("start")) if arg("start") else None,
+                    end=float(arg("end")) if arg("end") else None)
+                self._json(data)
+            except (ValueError, OverflowError) as exc:
+                self._json({"ok": False, "reason": str(exc)}, 400)
         elif path == "/api/diagnose":
             self._json(m.diagnose())
         elif path == "/api/health":
-            self._json({"ok": True, "status": m.status})
+            self._json({"ok": True, "status": m.status, "backend": m.backend,
+                        "service": "codex-model-monitor"})
         elif path == "/favicon.ico":
             self._send(204)
         else:
@@ -1121,16 +1221,11 @@ class Handler(BaseHTTPRequestHandler):
             self._json({"ok": True, "stats": stats})
 
         elif path == "/api/clear":
+            # Keep the legacy route safe: clear only the live log view, never history.
             with m.lock:
-                m.seen.clear()
-                m.req_models.clear()
-                m.rid_kind.clear()
-                m.count = {"normal": 0, "subtask": 0,
-                           "downgrade": 0, "incomplete": 0}
-                m.alerts.clear()
-                m.rounds = 0
-            m.log("info", "已清空捕获数据")
-            self._json({"ok": True})
+                m.logs.clear()
+            m.broker.publish({"type": "patch", "logs_reset": True})
+            self._json({"ok": True, "history_preserved": True})
 
         elif path == "/api/shutdown":
             self._json({"ok": True})
@@ -1216,8 +1311,10 @@ def serve(host, port, handler_cls, max_tries=12):
 def main():
     ap = argparse.ArgumentParser(
         description="Codex 模型降级监控 · 常驻采集器 + 本地 HTTP 视图服务（静默，无控制台输出）")
+    ap.add_argument("--db", default=DEFAULT_DB, help="SQLite 历史库路径；两种后端默认共用 data/monitor.sqlite")
+    ap.add_argument("--backend", choices=("python", "cpp"), default="python")
     ap.add_argument("--host", default="127.0.0.1")
-    ap.add_argument("--port", type=int, default=48766)
+    ap.add_argument("--port", type=int, default=None)
     ap.add_argument("--expect", default="gpt-6-astra",
                     help="预期模型（默认 gpt-6-astra）")
     ap.add_argument("--workers", type=int, default=4,
@@ -1231,12 +1328,17 @@ def main():
         help="日志文件（控制台不输出，日志只落文件 + 前端）")
     ap.add_argument("--no-open", action="store_true", help="不自动打开浏览器")
     args = ap.parse_args()
+    if args.port is None: args.port = 48778 if args.backend == "cpp" else 48766
 
     idle = args.idle if args.interval is None else max(0.0, args.interval)
     workers = max(1, min(16, args.workers))
 
     # ---- 采集器：先于 HTTP 服务构造并启动，与 HTTP 完全解耦 ----
-    monitor = Monitor(args.expect, idle, args.log, workers=workers)
+    if args.backend == "cpp":
+        from native_scanner import EXECUTABLE
+        if not os.path.isfile(EXECUTABLE):
+            return 4
+    monitor = Monitor(args.expect, idle, args.log, workers=workers, backend=args.backend, db_path=args.db)
     Handler.monitor = monitor
 
     worker = threading.Thread(target=monitor.run, name="collector", daemon=True)
@@ -1277,6 +1379,8 @@ def main():
         monitor.stop()
         try:
             httpd.server_close()
+            worker.join(timeout=35)
+            monitor.store.close()
         except Exception:
             pass
     return 0

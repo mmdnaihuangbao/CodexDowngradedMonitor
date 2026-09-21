@@ -1081,3 +1081,35 @@ b,strong {
     font-size:12px;
   }
 }
+
+/* History filters and server-side pagination. */
+.date-range { display:flex; align-items:center; gap:12px; flex-wrap:wrap; margin-bottom:12px; }
+.date-range label { display:flex; align-items:center; gap:10px; color:var(--text-2); font-size:12px; }
+.date-range input, .pagination input, .pagination select { border:1px solid var(--border); border-radius:7px; background:var(--bg-2); color:var(--text); padding:8px 10px; font:12px var(--mono); min-width:0; }
+.date-range input { cursor:pointer; width:245px; }
+.date-range input::-webkit-calendar-picker-indicator { cursor:pointer; opacity:.8; }
+.range-separator, .date-hint { color:var(--text-3); font-size:11px; }
+.history-status { display:flex; gap:12px; align-items:center; margin-bottom:10px; min-height:28px; }
+#history-error { color:var(--downgrade); font-size:12px; }
+#history-retry { padding:3px 9px; font-size:11px; }
+#page-loading { color:var(--text-3); font-size:11px; }
+.pagination { display:flex; align-items:center; gap:20px; flex-wrap:wrap; padding:18px 0; color:var(--text-2); font-size:12px; }
+.pagination label { display:flex; align-items:center; gap:7px; }
+#page-summary { margin-right:auto; }
+.page-actions { display:flex; align-items:center; gap:8px; }
+.pagination input { width:65px; }
+button:disabled { opacity:.4; cursor:not-allowed; }
+.card.pending:not(.v-downgrade):not(.suspect) { --tone:var(--accent); border-left-color:var(--accent); border-left-style:solid; }
+.card.suspect { --tone:var(--text-3); border-left-color:var(--text-3); border-left-style:dashed; }
+@media(max-width:700px) {
+  .filters { flex-wrap:wrap; }
+  .date-range { gap:8px; }
+  .date-range label { width:100%; justify-content:space-between; }
+  .date-range input { width:calc(100% - 66px); }
+  .range-separator { display:none; }
+  .date-hint { flex-basis:100%; }
+  .pagination { gap:12px; }
+  .page-actions { width:100%; justify-content:space-between; gap:5px; }
+  .pagination .abtn { padding:6px 9px; }
+  .history-status { flex-wrap:wrap; }
+}

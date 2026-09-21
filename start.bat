@@ -27,8 +27,10 @@ if not defined PY (
   exit /b 1
 )
 
-if /i "%~1"=="--stop"   goto :sync
-if /i "%~1"=="--status" goto :sync
+for %%A in (%*) do (
+  if /i "%%~A"=="--stop" goto :sync
+  if /i "%%~A"=="--status" goto :sync
+)
 
 start "" "%PY%" "%~dp0start.py" %*
 exit /b 0

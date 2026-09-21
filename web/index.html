@@ -15,7 +15,7 @@
   <div class="actions">
     <button class="abtn" id="btn-diag" title="查看最近一轮扫描统计">诊断</button>
     <button class="abtn" id="btn-cfg" title="修改预期模型与采样间隔">配置</button>
-    <button class="abtn" id="btn-clear" title="清空已捕获数据">清空</button>
+    <button class="abtn" id="btn-clear" title="清空当前运行日志显示，保留数据库历史">日志清屏</button>
     <button class="abtn danger" id="btn-stop" title="停止采集并退出服务">停止采集</button>
   </div>
 </header>
@@ -30,6 +30,7 @@
 </section>
 <details class="collector-details"><summary><span>采集详情</span><span class="collector-summary">已捕获 <b id="m-captured">0</b><span class="divider">/</span>请求配对 <b id="m-paired">0</b></span></summary>
   <div class="meta" id="meta">
+    <span class="m"><em>采集后端</em><b id="m-backend">—</b></span>
     <span class="m"><em>PID</em><b id="m-pid">—</b></span>
     <span class="m"><em>采样频率</em><b id="m-hz">—</b></span>
     <span class="m"><em>单轮耗时</em><b id="m-cost">—</b></span>
@@ -41,15 +42,28 @@
   </div>
 </details>
 <main>
-  <div class="list-heading"><h2>请求记录 <span id="result-count">0 条请求</span></h2><span class="list-hint">请求号双击复制 · 最新更新优先</span></div>
+  <div class="list-heading"><h2>请求记录 <span id="result-count">0 条请求</span></h2><span class="list-hint">请求号双击复制 · 创建时间从新到旧</span></div>
   <div class="toolbar">
     <div class="filters" id="filters" aria-label="按判定筛选">
-      <button class="fbtn active" data-filter="all">全部</button><button class="fbtn" data-filter="downgrade">降级</button><button class="fbtn" data-filter="incomplete">不完整</button><button class="fbtn" data-filter="subtask">子任务</button><button class="fbtn" data-filter="normal">正常</button>
+      <button class="fbtn active" data-filter="all">全部</button><button class="fbtn" data-filter="downgrade">降级</button><button class="fbtn" data-filter="incomplete">不完整</button><button class="fbtn" data-filter="subtask">子任务</button><button class="fbtn" data-filter="normal">正常</button><button class="fbtn" id="filter-suspect" data-filter="suspect">疑似样本</button>
     </div>
     <input id="search" class="search" type="search" aria-label="搜索请求" placeholder="搜索请求号、模型、状态…">
   </div>
+  <div class="date-range">
+    <label for="date-start">开始时间<input type="datetime-local" id="date-start" step="1"></label>
+    <span class="range-separator">至</span>
+    <label for="date-end">结束时间<input type="datetime-local" id="date-end" step="1"></label>
+    <button class="abtn" id="date-reset">重置时间</button>
+    <span class="date-hint">按创建时间筛选 · 缺失时用首次采集时间</span>
+  </div>
+  <div class="history-status"><span id="history-error" class="hidden" role="alert"></span><button id="history-retry" class="abtn">刷新记录</button><span id="page-loading" role="status"></span></div>
   <div id="empty" class="empty"><div class="empty-icon" aria-hidden="true">⌁</div><h2>尚未捕获到任何响应对象</h2><p>在 Codex 中发起一次对话，请求记录将在这里自动出现。</p><p class="hint" id="empty-hint"></p></div>
   <div id="cards" class="grid"></div><div id="more" class="more hidden"></div>
+  <nav class="pagination" aria-label="请求记录分页">
+    <span id="page-summary">共 0 条 · 第 1 / 1 页</span>
+    <label>每页 <select id="page-size"><option value="25">25 条</option><option value="50" selected>50 条</option><option value="100">100 条</option></select></label>
+    <div class="page-actions"><button class="abtn" id="page-prev" disabled>上一页</button><label>第 <input id="page-number" type="number" min="1" value="1" aria-label="页码"> 页</label><button class="abtn" id="page-go">跳转</button><button class="abtn" id="page-next" disabled>下一页</button></div>
+  </nav>
 </main>
 </div>
 <footer class="logbar"><button class="logtoggle" id="log-toggle"><span class="chev">▸</span>运行日志<span class="logcount" id="log-count">0</span></button><button class="logclear" id="log-clear">清屏</button><div class="logpanel hidden" id="log-panel"></div></footer>

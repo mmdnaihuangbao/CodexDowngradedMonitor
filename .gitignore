@@ -1,2 +1,17 @@
+# Local validation artifacts and runtime logs
 _verify/
 *.log
+
+# Python cache
+__pycache__/
+*.py[cod]
+
+# Native build output
+cpp_collector/build/
+
+# Captured history and SQLite sidecar files
+data/
+*.sqlite
+*.sqlite-wal
+*.sqlite-shm
+*.sqlite-journal

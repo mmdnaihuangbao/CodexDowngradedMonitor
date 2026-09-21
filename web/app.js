@@ -5,7 +5,7 @@
    ============================================================ */
 'use strict';
 
-const MAX_RENDER = 300;      // 单屏最多渲染卡片数
+const DEFAULT_PAGE_SIZE = 50;
 const MAX_LOGS   = 400;
 
 const S = {
@@ -14,6 +14,8 @@ const S = {
   stats:     {},
   filter:    'all',
   q:         '',
+  page: 1, pageSize: DEFAULT_PAGE_SIZE, total: 0, pages: 1,
+  start: '', end: '', loading: false, pageError: '',
   connected: false,
   dirty:     false,
   lastScan:  null,
@@ -125,16 +127,16 @@ function connect(){
 }
 
 function applySnapshot(data){
-  S.responses.clear();
-  (data.responses || []).forEach(r => S.responses.set(r.rid, r));
   S.logs = (data.logs || []).slice(-MAX_LOGS);
   S.stats = data.stats || {};
   renderLogPanel(true);
+  schedulePageRefresh(0);
   markDirty();
 }
 
 function applyPatch(msg){
-  (msg.upserts || []).forEach(r => S.responses.set(r.rid, r));
+  if (msg.upserts && msg.upserts.length) schedulePageRefresh();
+  if (msg.logs_reset){ S.logs = []; renderLogPanel(true); }
   // 顶部告警条已去掉；降级只留卡片本身 + 一次性提示
   if (msg.alerts && msg.alerts.length) toast('⚠ 检测到模型降级', true);
   if (msg.logs && msg.logs.length){
@@ -143,6 +145,49 @@ function applyPatch(msg){
   }
   if (msg.stats) S.stats = msg.stats;
   markDirty();
+}
+
+/* 历史由服务端筛选分页；SSE 只通知当前页刷新，不把全库塞进浏览器。 */
+let pageTimer = null, pageController = null, pageGeneration = 0;
+function schedulePageRefresh(delay = 250){
+  if (pageTimer !== null) return;
+  pageTimer = setTimeout(()=>{ pageTimer = null; loadPage(); }, delay);
+}
+function resetPage(){
+  S.page = 1;
+  clearTimeout(pageTimer); pageTimer = null;
+  loadPage();
+}
+function dateSeconds(value){
+  return value ? new Date(value).getTime() / 1000 : null;
+}
+async function loadPage(){
+  const generation = ++pageGeneration;
+  pageController?.abort();
+  pageController = new AbortController();
+  const start = dateSeconds(S.start), end = dateSeconds(S.end);
+  if ((start !== null && !Number.isFinite(start)) || (end !== null && !Number.isFinite(end)) ||
+      (start !== null && end !== null && start > end)){
+    S.loading = false; S.pageError = '开始时间不能晚于结束时间，请检查所选时间。';
+    markDirty(); return;
+  }
+  S.loading = true; S.pageError = ''; markDirty();
+  const params = new URLSearchParams({page:S.page, page_size:S.pageSize, filter:S.filter, q:S.q});
+  if (start !== null) params.set('start', start);
+  if (end !== null) params.set('end', end);
+  try{
+    const response = await fetch('/api/responses?' + params, {signal:pageController.signal});
+    const data = await response.json();
+    if (!response.ok) throw new Error(data.reason || '历史记录加载失败');
+    if (generation !== pageGeneration) return;
+    S.responses = new Map((data.responses || []).map(r=>[r.rid,r]));
+    S.total = data.total; S.page = data.page; S.pages = data.pages;
+  }catch(error){
+    if (generation !== pageGeneration || error.name === 'AbortError') return;
+    S.pageError = '加载失败：' + error.message;
+  }finally{
+    if (generation === pageGeneration){ S.loading = false; markDirty(); }
+  }
 }
 
 /* ---------------------------------------------------------- 渲染调度 */
@@ -175,6 +220,7 @@ function renderStatus(){
     : (status === 'no_process' || status === 'starting' || status === 'offline') ? 'warn'
     : 'err');
 
+  $('m-backend').textContent = st.backend === 'cpp' ? 'C++ · 原生扫描' : 'Python';
   el.mPid.textContent      = st.pid ?? '—';
   el.mExpect.textContent   = st.expect ?? '—';
   el.mHz.textContent       = st.hz ? st.hz.toFixed(1) + ' 轮/秒' : '—';
@@ -190,6 +236,7 @@ function renderStatus(){
   S.lastScan = st.last_scan || null;
   el.mLast.textContent     = S.lastScan ? hhmmss(S.lastScan) : '—';
 
+  $('filter-suspect').textContent = `疑似样本 ${st.suspect_count || 0}`;
   const c = st.counts || {};
   el.cNormal.textContent     = c.normal ?? 0;
   el.cSubtask.textContent    = c.subtask ?? 0;
@@ -229,6 +276,8 @@ function matchFilter(r){
 
 function cardHtml(r){
   const v = r.verdict || 'normal';
+  const pending = r.status === 'in_progress' || r.status === 'queued';
+  const badge = r.suspect_reason ? '疑似样本' : (VERDICT_CN[v] || v) + (pending ? '-未完成' : '');
   const req = r.req_model;
 
   let swapCls = 'unknown', swapInner;
@@ -239,7 +288,12 @@ function cardHtml(r){
                  <em>响应</em><span class="res">${esc(r.model)}</span>`;
   } else {
     // 没采到请求模型 —— 采集缺口，不是降级证据，所以标黄不标红
-    swapInner = `<em>请求模型未采到</em><span class="res">无法配对，不能据此判降级</span>`;
+    const reason = {
+      no_previous_response_id: '无前序响应号，无法精确配对',
+      ambiguous_previous_response_id: '同一前序响应对应多个模型',
+      request_not_captured: '未捕获可配对的请求',
+    }[r.pairing_status] || '无法配对，不能据此判降级';
+    swapInner = `<em>请求模型未确认</em><span class="res">${esc(reason)}</span>`;
   }
 
   const effortCls = r.effort === 'high' || r.effort === 'xhigh' ? 'effort-high'
@@ -248,9 +302,9 @@ function cardHtml(r){
   const meta = (label, val, cls) =>
     `<span class="meta-item"><em>${label}</em><b class="${cls || ''}">${esc(val ?? '-')}</b></span>`;
 
-  return `<article class="card v-${v}" data-rid="${esc(r.rid)}">
+  return `<article class="card v-${v}${pending ? ' pending' : ''}${r.suspect_reason ? ' suspect' : ''}" data-rid="${esc(r.rid)}">
     <div class="card-main">
-      <span class="badge${v==='downgrade'?' blink':''}">${VERDICT_CN[v] || v}</span>
+      <span class="badge${v==='downgrade'?' blink':''}">${esc(badge)}</span>
       <span class="model" title="${esc(r.model)}">${esc(r.model)}</span>
       <span class="swapline ${swapCls}">${swapInner}</span>
       <span class="duration"><em>请求总耗时</em><strong>${esc(requestDuration(r))}</strong></span>
@@ -266,6 +320,7 @@ function cardHtml(r){
       ${meta('创建', r.created_at)}
       ${meta('完成', r.completed_at)}
       ${meta('标记', r.marks)}
+      ${r.suspect_reason ? meta('样本说明', r.suspect_reason) : ''}
       ${r.updates ? `<span class="upd">状态更新 ${r.updates} 次</span>` : ''}
       <span class="subtime">${esc(hhmmss(r.last_seen))}</span>
     </div>
@@ -276,7 +331,7 @@ function cardHtml(r){
 function cardSig(r){
   return [r.model, r.req_model, r.verdict, r.effort, r.status, r.text_format,
           r.created_at, r.completed_at, r.duration_seconds, r.marks, r.updates,
-          r.last_seen].join('\u0002');
+          r.last_seen, r.pairing_status, r.suspect_reason].join('\u0002');
 }
 
 function createCardNode(r){
@@ -309,27 +364,29 @@ function bindRequestId(node, rid){
 }
 
 function renderCards(){
-  const all = [...S.responses.values()]
-    .sort((a,b)=> (b.last_seen||0) - (a.last_seen||0));
-  const list = all.filter(matchFilter);
-  const shown = list.slice(0, MAX_RENDER);
-  $('result-count').textContent = `${list.length} 条请求`;
-
-  const listEmpty = list.length === 0;
+  const shown = [...S.responses.values()];
+  $('result-count').textContent = `${S.total} 条请求`;
+  $('page-summary').textContent = S.total ? `共 ${S.total} 条 · 第 ${S.page} / ${S.pages} 页` : '共 0 条 · 第 1 / 1 页';
+  $('page-number').value = S.page;
+  $('page-number').max = S.pages;
+  $('page-prev').disabled = S.loading || S.page <= 1;
+  $('page-next').disabled = S.loading || S.page >= S.pages;
+  $('page-go').disabled = S.loading || !!S.pageError;
+  $('page-loading').textContent = S.loading ? '加载中…' : '';
+  $('history-error').textContent = S.pageError;
+  $('history-error').classList.toggle('hidden', !S.pageError);
+  const listEmpty = shown.length === 0;
   el.empty.classList.toggle('hidden', !listEmpty);
   el.cards.classList.toggle('hidden', listEmpty);
+  el.cards.setAttribute('aria-busy', String(S.loading));
   if (listEmpty){
-    el.empty.querySelector('h2').textContent = all.length > 0
-      ? '没有符合当前筛选条件的卡片'
-      : '尚未捕获到任何响应对象';
+    el.empty.querySelector('h2').textContent = S.loading ? '正在加载历史记录…'
+      : (S.filter !== 'all' || S.q || S.start || S.end ? '没有符合当前筛选条件的记录' : '尚未捕获到任何响应对象');
   }
-  el.more.classList.toggle('hidden', list.length <= MAX_RENDER);
-  if (list.length > MAX_RENDER){
-    el.more.textContent = `已隐藏较早的 ${list.length - MAX_RENDER} 条（可缩小筛选范围）`;
-  }
+  el.more.classList.add('hidden');
 
   // 内容签名一致 => 完全不动 DOM。心跳广播、纯统计更新都走这条路。
-  const parts = [S.filter, S.q, list.length];
+  const parts = [S.filter, S.q, S.page, shown.length];
   for (const r of shown) parts.push(r.rid, cardSig(r));
   const sig = parts.join('\u0001');
   if (sig === lastCardsSig) return;
@@ -480,20 +537,43 @@ function bind(){
   document.querySelectorAll('.cnt').forEach(b=>{
     b.addEventListener('click', ()=>{
       S.filter = (S.filter === b.dataset.filter) ? 'all' : b.dataset.filter;
-      syncFilterBtns(); markDirty();
+      syncFilterBtns(); resetPage();
     });
   });
   document.querySelectorAll('#filters .fbtn').forEach(b=>{
     b.addEventListener('click', ()=>{
-      S.filter = b.dataset.filter; syncFilterBtns(); markDirty();
+      S.filter = b.dataset.filter; syncFilterBtns(); resetPage();
     });
   });
 
   let sTimer;
   el.search.addEventListener('input', ()=>{
     clearTimeout(sTimer);
-    sTimer = setTimeout(()=>{ S.q = el.search.value.trim(); markDirty(); }, 120);
+    sTimer = setTimeout(()=>{ S.q = el.search.value.trim(); resetPage(); }, 120);
   });
+
+  for (const id of ['date-start','date-end']){
+    $(id).addEventListener('change', ()=>{
+      S.start = $('date-start').value; S.end = $('date-end').value; resetPage();
+    });
+    $(id).addEventListener('click', ()=>{
+      try { $(id).showPicker?.(); } catch (_) { /* Browser's native input remains usable. */ }
+    });
+  }
+  $('date-reset').addEventListener('click', ()=>{
+    $('date-start').value = ''; $('date-end').value = ''; S.start = ''; S.end = ''; resetPage();
+  });
+  $('page-prev').addEventListener('click', ()=>{ if (S.page > 1){ --S.page; loadPage(); } });
+  $('page-next').addEventListener('click', ()=>{ if (S.page < S.pages){ ++S.page; loadPage(); } });
+  $('page-size').addEventListener('change', ()=>{ S.pageSize = Number($('page-size').value); resetPage(); });
+  const go = ()=>{
+    const value = Number($('page-number').value);
+    if (!Number.isInteger(value) || value < 1 || value > S.pages){ toast('请输入有效页码', true); return; }
+    S.page = value; loadPage();
+  };
+  $('page-go').addEventListener('click', go);
+  $('page-number').addEventListener('keydown', event=>{ if (event.key === 'Enter') go(); });
+  $('history-retry').addEventListener('click', ()=>loadPage());
 
   el.logToggle.addEventListener('click', ()=>{
     el.logPanel.classList.toggle('hidden');
@@ -507,11 +587,8 @@ function bind(){
   $('btn-diag').addEventListener('click', doDiagnose);
   $('btn-cfg').addEventListener('click', doConfig);
   $('btn-clear').addEventListener('click', async ()=>{
-    if (!confirm('确定清空当前已捕获的全部响应？采集不会停止。')) return;
-    await post('/api/clear');
-    S.responses.clear(); S.logs = [];
-    resetCardRender();
-    renderLogPanel(true); markDirty(); toast('已清空');
+    const result = await post('/api/clear');
+    if (result && result.ok){ S.logs = []; renderLogPanel(true); toast('运行日志已清屏，历史记录保留'); }
   });
   $('btn-stop').addEventListener('click', async ()=>{
     if (!confirm('确定停止采集并退出本地服务？')) return;

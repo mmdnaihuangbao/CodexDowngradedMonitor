@@ -1,5 +1,10 @@
 # Codex 模型降级监控（常驻采集器 + 本地 Web 面板）
 
+> **历史记录已持久化**：两种后端共用 `data/monitor.sqlite`，支持启动恢复、服务端分页、起止日历筛选及疑似样本隔离。详见 [历史记录说明](HISTORY.md)。
+
+> **2026-09-20：新增 C++ 采集后端。** 双击 `start-cpp.bat`（默认 48778）或 `start-python.bat`（默认 48766）；命令行用 `python start.py --backend cpp/python`。C++ 负责扫描和解析，Python 保留网页服务。两种后端的进程发现都已改用 Windows API，不再运行 PowerShell 枚举；存活检测、延迟配对与歧义处理也已修正。以下旧版原理说明以 [C++ 采集器说明](cpp_collector/README.md) 中的更新为准。
+
+
 把 `codex_model_watch2.py` 的控制台输出，改造成 **常驻静默采集 + 本地 HTTP 视图服务 + 前端卡片面板**。
 
 ---
