@@ -32,7 +32,7 @@ python start.py --backend cpp --db D:\MonitorData\history.sqlite
 | `response_events` | 捕获到的状态/证据变化历史 |
 | `request_evidence` | 去重后的请求模型与前序响应证据 |
 | `collector_logs` | 采集运行日志 |
-| `data_version` | 单行数据版本声明，当前文本值 `0.1`；不等同于整数 `PRAGMA user_version` |
+| `data_version` | 单行数据版本声明，当前文本值 `0.2`；启动时兼容升级 `0.1`，不等同于整数 `PRAGMA user_version` |
 
 新记录在 payload 中保存 `_expect`（首次采集时的预期模型，允许空字符串），接口输出为 `expect`，非空时卡片显示“采集时预期”。修改配置不会重新分类历史；后续补齐状态或请求证据仍使用该记录自己的预期模型。旧记录缺少 `_expect` 时保留原分类，不用当前配置补写未知的历史设置。版本表为增量创建，不重写已有响应和事件。
 

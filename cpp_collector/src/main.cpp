@@ -14,8 +14,8 @@
 #include "extract.hpp"
 using Clock=std::chrono::steady_clock;
 static double seconds(Clock::time_point t){return std::chrono::duration<double>(Clock::now()-t).count();}
-struct Task{uintptr_t address;size_t size,owned;};
-struct Result{capture::Batch batch;uint64_t bytes=0,hits=0,errors=0;double read=0,parse=0;std::set<uintptr_t> hot;};
+struct Task{uintptr_t address;size_t size,owned,available;};
+struct Result{capture::Batch batch;uint64_t bytes=0,owned=0,tasks=0,hits=0,errors=0,supplemental=0;double read=0,parse=0,prefilter=0;};
 class Scanner {
     HANDLE process;
     std::vector<std::thread> pool;
@@ -26,27 +26,46 @@ class Scanner {
     std::atomic<size_t> next{0};
     std::vector<Task> tasks;
     std::vector<Result> results;
-    std::set<uintptr_t> hot;
     std::vector<Task> cached;
     Clock::time_point enumerated{};
     size_t regions=0;
     double region_cost=0;
-    static constexpr size_t chunk=1<<20;
+    // Read two adjacent parse blocks with one overlap. Parsing stays at 1 MiB so a
+    // marker does not make twice as much unrelated memory enter the JSON extractor.
+    static constexpr size_t parse_chunk=1<<20;
+    static constexpr size_t read_chunk=2<<20;
     void worker(size_t index) {
-        std::vector<char> buffer(chunk+capture::window_size);
+        std::vector<char> buffer(read_chunk+capture::window_size);
         unsigned observed=0;
         for(;;){
             {std::unique_lock<std::mutex> lock(mutex);begin.wait(lock,[&]{return stopping||generation!=observed;});if(stopping)return;observed=generation;}
             Result r;
             for(size_t t=next.fetch_add(1);t<tasks.size();t=next.fetch_add(1)) {
-                const auto task=tasks[t];SIZE_T got=0;
+                const auto task=tasks[t];SIZE_T got=0;++r.tasks;r.owned+=task.owned;
                 auto t0=Clock::now();
                 BOOL ok=ReadProcessMemory(process,reinterpret_cast<void*>(task.address),buffer.data(),task.size,&got);
                 r.read+=seconds(t0);r.bytes+=got;if(!ok)++r.errors;
                 if(got){
-                    auto data=std::string_view(buffer.data(),got);
-                    if(data.find("\"model\"")!=data.npos && (data.find("resp_")!=data.npos || data.find("response.create")!=data.npos)) {
-                        ++r.hits;r.hot.insert(task.address);t0=Clock::now();capture::extract(data,r.batch,task.owned);r.parse+=seconds(t0);
+                    for(size_t block=0;block<task.owned && block<got;block+=parse_chunk) {
+                        const auto owned=std::min(parse_chunk,task.owned-block);
+                        const auto available=got-block;
+                        const auto view_size=std::min(owned+capture::window_size,available);
+                        auto data=std::string_view(buffer.data()+block,view_size);
+                        t0=Clock::now();bool candidate=capture::candidate_block(data);r.prefilter+=seconds(t0);
+                        if(!candidate)continue;
+                        ++r.hits;t0=Clock::now();capture::extract(data,r.batch,owned);r.parse+=seconds(t0);
+                        auto retries=std::move(r.batch.retry_offsets);r.batch.retry_offsets.clear();
+                        for(auto offset:retries) {
+                            const auto absolute=block+offset;
+                            const auto size=std::min(capture::max_window_size,task.available-absolute);
+                            if(size<=got-absolute)continue;
+                            std::vector<char> extended(size);SIZE_T extra=0;t0=Clock::now();
+                            BOOL read_ok=ReadProcessMemory(process,reinterpret_cast<void*>(task.address+absolute),extended.data(),size,&extra);
+                            r.read+=seconds(t0);r.bytes+=extra;++r.supplemental;if(!read_ok)++r.errors;
+                            // Only the original candidate owns this retry; neighbouring objects remain in the normal sweep.
+                            t0=Clock::now();capture::extract(std::string_view(extended.data(),extra),r.batch,1);r.parse+=seconds(t0);
+                            r.batch.retry_offsets.clear();
+                        }
                     }
                 }
             }
@@ -62,7 +81,7 @@ class Scanner {
             if(!size || base+size<=p)break;
             if(mbi.State==MEM_COMMIT && (mbi.Type==MEM_PRIVATE||mbi.Type==MEM_MAPPED) && !(mbi.Protect&(PAGE_GUARD|PAGE_NOACCESS)) && (mbi.Protect&(PAGE_READONLY|PAGE_READWRITE|PAGE_WRITECOPY|PAGE_EXECUTE_READ|PAGE_EXECUTE_READWRITE|PAGE_EXECUTE_WRITECOPY))){
                 ++regions;
-                for(size_t off=0;off<size;off+=chunk){auto own=std::min(chunk,size-off);cached.push_back({base+off,std::min(own+capture::window_size,size-off),own});}
+                for(size_t off=0;off<size;off+=read_chunk){auto own=std::min(read_chunk,size-off);cached.push_back({base+off,std::min(own+capture::window_size,size-off),own,size-off});}
             }
             p=base+size;
         }
@@ -75,21 +94,31 @@ public:
     void sweep(){
         if(!alive()){std::cout<<"{\"alive\":false}"<<std::endl;return;}
         auto t0=Clock::now();enumerate();tasks=cached;
-        std::stable_partition(tasks.begin(),tasks.end(),[&](const Task& t){return hot.count(t.address)>0;});
         {std::lock_guard<std::mutex> lock(mutex);next=0;done=0;++generation;}begin.notify_all();
         {std::unique_lock<std::mutex> lock(mutex);end.wait(lock,[&]{return done==pool.size();});}
-        Result total;std::set<std::string> seen_res,seen_req;
+        auto merge_start=Clock::now();
+        Result total;std::set<capture::Fields> seen_res,seen_req;
+        double read_max=0,prefilter_max=0,parse_max=0,worker_max=0;
         for(auto& r:results){
-            total.bytes+=r.bytes;total.hits+=r.hits;total.errors+=r.errors;total.read+=r.read;total.parse+=r.parse;
-            total.hot.insert(r.hot.begin(),r.hot.end());
-            for(auto& row:r.batch.responses)if(seen_res.insert(capture::json(row)).second)total.batch.responses.push_back(std::move(row));
-            for(auto& row:r.batch.requests)if(seen_req.insert(capture::json(row)).second)total.batch.requests.push_back(std::move(row));
+            total.bytes+=r.bytes;total.owned+=r.owned;total.tasks+=r.tasks;total.hits+=r.hits;total.errors+=r.errors;total.read+=r.read;total.parse+=r.parse;
+            total.prefilter+=r.prefilter;total.supplemental+=r.supplemental;
+            read_max=std::max(read_max,r.read);prefilter_max=std::max(prefilter_max,r.prefilter);parse_max=std::max(parse_max,r.parse);
+            worker_max=std::max(worker_max,r.read+r.prefilter+r.parse);
+            total.batch.candidates+=r.batch.candidates;total.batch.truncated+=r.batch.truncated;
+            for(auto& row:r.batch.responses)if(seen_res.insert(row).second)total.batch.responses.push_back(std::move(row));
+            for(auto& row:r.batch.requests)if(seen_req.insert(row).second)total.batch.requests.push_back(std::move(row));
         }
-        hot=std::move(total.hot);
-        std::cout<<"{\"alive\":true,\"bytes\":"<<total.bytes<<",\"regions\":"<<regions<<",\"workers\":"<<pool.size()
+        const auto merge_cost=seconds(merge_start);auto output_start=Clock::now();
+        auto response_json=capture::array(total.batch.responses),request_json=capture::array(total.batch.requests);
+        const auto serialize_cost=seconds(output_start);
+        std::cout<<"{\"alive\":true,\"bytes\":"<<total.bytes<<",\"owned_bytes\":"<<total.owned<<",\"tasks\":"<<total.tasks<<",\"regions\":"<<regions<<",\"workers\":"<<pool.size()
             <<",\"region_cost\":"<<region_cost<<",\"scan_cost\":"<<seconds(t0)<<",\"hit_blocks\":"<<total.hits
             <<",\"read_errors\":"<<total.errors<<",\"read_worker_seconds\":"<<total.read<<",\"parse_worker_seconds\":"<<total.parse
-            <<",\"responses\":"<<capture::array(total.batch.responses)<<",\"requests\":"<<capture::array(total.batch.requests)<<"}"<<std::endl;
+            <<",\"prefilter_worker_seconds\":"<<total.prefilter<<",\"read_worker_max_seconds\":"<<read_max
+            <<",\"prefilter_worker_max_seconds\":"<<prefilter_max<<",\"parse_worker_max_seconds\":"<<parse_max
+            <<",\"worker_max_seconds\":"<<worker_max<<",\"merge_cost\":"<<merge_cost<<",\"serialize_cost\":"<<serialize_cost
+            <<",\"parse_candidates\":"<<total.batch.candidates<<",\"incomplete_candidates\":"<<total.batch.truncated<<",\"supplemental_reads\":"<<total.supplemental
+            <<",\"responses\":"<<response_json<<",\"requests\":"<<request_json<<"}"<<std::endl;
     }
 };
 int main(int argc,char** argv){

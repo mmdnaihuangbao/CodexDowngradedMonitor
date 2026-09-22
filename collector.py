@@ -746,8 +746,7 @@ class Monitor:
         return new_alert
 
     # ---------------- 序列化 ----------------
-    @staticmethod
-    def ser(rec):
+    def ser(self, rec):
         created = rec.get("created_at")
         completed = rec.get("completed_at")
         try:
@@ -943,6 +942,8 @@ class Monitor:
             # Conflicting models remain ambiguous rather than last-writer-wins.
             evidence_changed = set()
             for request in reqs:
+                if request.get("candidate_only"):
+                    continue
                 prev, model = request.get("prev"), request.get("model")
                 if not prev or not model:
                     continue
@@ -1011,6 +1012,7 @@ class Monitor:
                 "raw_responses": len(resps),
                 "raw_requests": len(reqs),
                 "unkeyed_requests": sum(not r.get("prev") for r in reqs),
+                "request_candidates": [dict(r) for r in reqs[:50]],
                 "ambiguous_pairings": sum(v is None for v in self.req_models.values()),
                 "backend": self.backend,
                 "native": native_metrics,

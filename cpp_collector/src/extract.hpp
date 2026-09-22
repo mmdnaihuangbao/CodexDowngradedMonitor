@@ -1,6 +1,8 @@
 #pragma once
 #include <algorithm>
+#include <array>
 #include <cctype>
+#include <cstdint>
 #include <map>
 #include <string>
 #include <string_view>
@@ -8,8 +10,14 @@
 
 namespace capture {
 constexpr size_t window_size = 256 * 1024;
+// Large input/tool arrays can precede model. Grow only candidate reads, not every block.
+constexpr size_t max_window_size = 4 * 1024 * 1024;
 using Fields = std::map<std::string, std::string>;
-struct Batch { std::vector<Fields> responses, requests; };
+struct Batch {
+    std::vector<Fields> responses, requests;
+    uint64_t candidates=0, truncated=0;
+    std::vector<size_t> retry_offsets;
+};
 inline void ws(std::string_view s, size_t& p) {
     while (p < s.size() && (s[p]==' ' || s[p]=='\n' || s[p]=='\r' || s[p]=='\t')) ++p;
 }
@@ -60,63 +68,124 @@ inline std::string scalar(std::string_view v) {
     if (std::all_of(v.begin(),v.end(),[](unsigned char c){return std::isdigit(c);})) return std::string(v);
     return {};
 }
-inline std::map<std::string,std::string_view> fields(std::string_view s) {
-    std::map<std::string,std::string_view> out;
+enum FieldKey : size_t {
+    kId, kType, kModel, kPrevious, kObject, kClientMetadata,
+    kSafetyIdentifier, kFrequencyPenalty, kPresencePenalty, kCompletedAt,
+    kMaxOutputTokens, kStatus, kCreatedAt, kReasoning, kText, kFormat, kInput,
+    kEffort, kThreadId, kSessionId, kTurnId, kRootTurnId, kFieldCount
+};
+inline int field_key(std::string_view key) {
+    switch(key.size()) {
+    case 2:  if(key=="id")return kId; break;
+    case 4:  if(key=="type")return kType;if(key=="text")return kText;break;
+    case 5:  if(key=="model")return kModel;if(key=="input")return kInput;break;
+    case 6:  if(key=="object")return kObject;if(key=="status")return kStatus;
+             if(key=="format")return kFormat;if(key=="effort")return kEffort;break;
+    case 7:  if(key=="turn_id")return kTurnId;break;
+    case 9:  if(key=="reasoning")return kReasoning;if(key=="thread_id")return kThreadId;break;
+    case 10: if(key=="created_at")return kCreatedAt;if(key=="session_id")return kSessionId;break;
+    case 12: if(key=="completed_at")return kCompletedAt;if(key=="root_turn_id")return kRootTurnId;break;
+    case 15: if(key=="client_metadata")return kClientMetadata;break;
+    case 16: if(key=="presence_penalty")return kPresencePenalty;break;
+    case 17: if(key=="safety_identifier")return kSafetyIdentifier;
+             if(key=="frequency_penalty")return kFrequencyPenalty;
+             if(key=="max_output_tokens")return kMaxOutputTokens;break;
+    case 20: if(key=="previous_response_id")return kPrevious;break;
+    }
+    return -1;
+}
+// Only consumed fields receive slots. This avoids heap allocation and repeated linear
+// searches while preserving duplicate detection for every field that affects evidence.
+struct FieldViews {
+    std::array<std::string_view,kFieldCount> values{};
+    uint32_t present=0;
+    bool add(int key,std::string_view value) {
+        if(key<0)return true;
+        const auto bit=uint32_t{1}<<key;
+        if(present&bit)return false;
+        present|=bit;values[static_cast<size_t>(key)]=value;return true;
+    }
+    bool count(FieldKey key) const {return (present&(uint32_t{1}<<key))!=0;}
+    std::string_view get(FieldKey key) const {return count(key)?values[key]:std::string_view{};}
+};
+inline FieldViews fields(std::string_view s, size_t* complete=nullptr) {
+    FieldViews out;
     size_t p=0; ws(s,p);
     if(p>=s.size() || s[p++]!='{') return out;
     for (size_t count=0;count<128;++count) {
-        ws(s,p); if(p>=s.size() || s[p]=='}') break;
+        ws(s,p); if(p>=s.size()) break;
+        if(s[p]=='}') { if(complete)*complete=p+1; break; }
         size_t k=p; if(!string_end(s,p)) break;
-        auto key=scalar(s.substr(k,p-k));
+        auto key=s.substr(k+1,p-k-2);
+        if(key.find('\\')!=key.npos)return {};
         ws(s,p); if(p>=s.size() || s[p++]!=':') break;
         ws(s,p); size_t start=p;
         if(!skip(s,p)) break;
-        if(!key.empty()) {
-            if(out.count(key)) return {}; // Duplicate direct fields are ambiguous.
-            out.emplace(std::move(key),s.substr(start,p-start));
-        }
-        ws(s,p); if(p>=s.size() || s[p++]!=',') break;
+        if(!out.add(field_key(key),s.substr(start,p-start)))return {}; // Relevant duplicate fields are ambiguous.
+        ws(s,p); if(p>=s.size()) break;
+        if(s[p]=='}') { if(complete)*complete=p+1; break; }
+        if(s[p++]!=',') break;
     }
     return out;
 }
-inline std::string value(const std::map<std::string,std::string_view>& f, const char* key) {
-    auto it=f.find(key); return it==f.end()?std::string():scalar(it->second);
+inline std::string value(const FieldViews& f, FieldKey key) {
+    return scalar(f.get(key));
 }
 inline bool rid(const std::string& s) {
     return s.size()>5 && s.rfind("resp_",0)==0 && std::all_of(s.begin()+5,s.end(),[](unsigned char c){return std::isalnum(c)||c=='_'||c=='-';});
 }
-inline void extract(std::string_view data, Batch& out, size_t start_limit=SIZE_MAX) {
-    if(data.find("\"model\"")==data.npos || (data.find("resp_")==data.npos && data.find("response.create")==data.npos)) return;
-    for(size_t p=data.find('{');p!=data.npos && p<start_limit;p=data.find('{',p+1)) {
-        if(out.responses.size()+out.requests.size()>=10000) break;
-        auto s=data.substr(p,std::min(window_size,data.size()-p));
-        size_t k=1; ws(s,k); size_t begin=k; if(!string_end(s,k)) continue;
-        const auto first=scalar(s.substr(begin,k-begin));
-        if(first!="id" && first!="type" && first!="model" && first!="previous_response_id" && first!="object" && first!="store" && first!="stream" && first!="client_metadata") continue;
-        auto f=fields(s); const auto model=value(f,"model");
-        if(model.empty()) continue;
-        const auto type=value(f,"type");
-        if(type=="response.create") {
-            Fields r{{"model",model}};
-            const auto prev=value(f,"previous_response_id");
-            if(rid(prev)) r["prev"]=prev;
-            // A first request is observed but not paired by timing alone.
-            r["source"]="memory_websocket";
-            out.requests.push_back(std::move(r)); continue;
+inline bool candidate_block(std::string_view data) {
+    // Most memory has neither marker. Avoid three/four full-buffer searches, especially
+    // the unquoted response.create search whose first byte is common in ordinary text.
+    return data.find("\"model\"")!=data.npos || data.find("\"response.create\"")!=data.npos;
+}
+inline void extract(std::string_view data,Batch& out,size_t start_limit=SIZE_MAX) {
+    for(size_t p=data.find('{');p!=data.npos&&p<start_limit;p=data.find('{',p+1)) {
+        if(out.responses.size()+out.requests.size()>=10000)break;
+        auto s=data.substr(p,std::min(max_window_size,data.size()-p));
+        size_t k=1;ws(s,k);const auto key_start=k;if(!string_end(s,k))continue;
+        const auto first=s.substr(key_start+1,k-key_start-2);
+        if(first=="type"||first=="id") {
+            ws(s,k);if(k>=s.size()||s[k++]!=':')continue;
+            ws(s,k);const auto start=k;if(!string_end(s,k))continue;
+            const auto v=s.substr(start+1,k-start-2);
+            if(first=="type"&&v!="response.create")continue;
+            if(first=="id"&&v.substr(0,5)!="resp_")continue;
         }
-        const auto id=value(f,"id"); if(!rid(id) || f.count("client_metadata")) continue;
-        int marks=0;
-        for(const char* key:{"safety_identifier","frequency_penalty","presence_penalty","completed_at","max_output_tokens"}) marks+=f.count(key)?1:0;
-        if(value(f,"object")=="response") ++marks;
-        if(marks<2) continue;
+        ++out.candidates;size_t complete=0;auto f=fields(s,&complete);const auto model=value(f,kModel);
+        if(!complete) {
+            ++out.truncated;
+            if(s.size()<max_window_size&&(value(f,kType)=="response.create"||f.count(kClientMetadata)))out.retry_offsets.push_back(p);
+            continue;
+        }
+        if(model.empty())continue;
+        const auto type=value(f,kType);
+        const bool http_candidate=type.empty()&&f.count(kInput)&&f.count(kClientMetadata)&&!f.count(kId)&&!f.count(kObject);
+        if(type=="response.create"||http_candidate) {
+            Fields r{{"model",model}};const auto prev=value(f,kPrevious);if(rid(prev))r["prev"]=prev;
+            r["source"]=http_candidate?"memory_http_candidate":"memory_websocket";if(http_candidate)r["candidate_only"]="1";
+            if(f.count(kClientMetadata)) {
+                auto context=fields(f.get(kClientMetadata));
+                for(const auto& [name,key]:std::initializer_list<std::pair<const char*,FieldKey>>{
+                        {"thread_id",kThreadId},{"session_id",kSessionId},{"turn_id",kTurnId},{"root_turn_id",kRootTurnId}}) {
+                    auto v=value(context,key);if(!v.empty())r[name]=v;
+                }
+            }
+            out.requests.push_back(std::move(r));p+=complete-1;continue;
+        }
+        const auto id=value(f,kId);if(!rid(id)||f.count(kClientMetadata))continue;
+        int marks=0;for(auto key:{kSafetyIdentifier,kFrequencyPenalty,kPresencePenalty,kCompletedAt,kMaxOutputTokens})marks+=f.count(key)?1:0;
+        if(value(f,kObject)=="response")++marks;if(marks<2)continue;
         Fields r{{"response_id",id},{"model",model},{"_marks",std::to_string(marks)}};
-        for(const char* key:{"status","created_at","completed_at"}) {auto v=value(f,key); if(!v.empty())r[key]=v;}
-        auto prev=value(f,"previous_response_id");if(rid(prev))r["prev"]=prev;
-        if(auto it=f.find("reasoning");it!=f.end()) {auto effort=value(fields(it->second),"effort");if(!effort.empty())r["effort"]=effort;}
-        if(auto it=f.find("text");it!=f.end()) {
-            auto text=fields(it->second);if(auto fmt=text.find("format");fmt!=text.end())r["text_format"]=value(fields(fmt->second),"type");
-        } else if(auto fmt=f.find("format");fmt!=f.end())r["text_format"]=value(fields(fmt->second),"type");
-        out.responses.push_back(std::move(r));
+        for(const auto& [name,key]:std::initializer_list<std::pair<const char*,FieldKey>>{
+                {"status",kStatus},{"created_at",kCreatedAt},{"completed_at",kCompletedAt}}) {
+            auto v=value(f,key);if(!v.empty())r[name]=v;
+        }
+        auto prev=value(f,kPrevious);if(rid(prev))r["prev"]=prev;
+        if(f.count(kReasoning)){auto effort=value(fields(f.get(kReasoning)),kEffort);if(!effort.empty())r["effort"]=effort;}
+        if(f.count(kText)){auto text=fields(f.get(kText));if(text.count(kFormat))r["text_format"]=value(fields(text.get(kFormat)),kType);}
+        else if(f.count(kFormat))r["text_format"]=value(fields(f.get(kFormat)),kType);
+        out.responses.push_back(std::move(r));p+=complete-1;
     }
 }
 inline std::string quote(std::string_view s) {

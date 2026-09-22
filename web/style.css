@@ -987,6 +987,18 @@ b,strong {
   font-size:16px;
   flex-basis:180px;
 }
+.model-effort {
+  margin-left:8px;
+  font-size:12px;
+  font-weight:400;
+  color:var(--text-2);
+}
+.model-effort.effort-high {
+  color:var(--accent);
+}
+.model-effort.effort-low {
+  color:var(--incomplete);
+}
 .swapline {
   font-size:14px;
   gap:7px;

@@ -289,12 +289,9 @@ function cardHtml(r){
                  <em>响应</em><span class="res">${esc(r.model)}</span>`;
   } else {
     // 没采到请求模型 —— 采集缺口，不是降级证据，所以标黄不标红
-    const reason = {
-      no_previous_response_id: '无前序响应号，无法精确配对',
-      ambiguous_previous_response_id: '同一前序响应对应多个模型',
-      request_not_captured: '未捕获可配对的请求',
-    }[r.pairing_status] || '无法配对，不能据此判降级';
-    swapInner = `<em>请求模型未确认</em><span class="res">${esc(reason)}</span>`;
+    swapInner = `<span class="req">?</span>
+                 <span class="arrow">→</span>
+                 <span class="res">${esc(r.model)}</span>`;
   }
 
   const effortCls = r.effort === 'high' || r.effort === 'xhigh' ? 'effort-high'
@@ -306,7 +303,9 @@ function cardHtml(r){
   return `<article class="card v-${v}${pending ? ' pending' : ''}${r.suspect_reason ? ' suspect' : ''}" data-rid="${esc(r.rid)}">
     <div class="card-main">
       <span class="badge${v==='downgrade'?' blink':''}">${esc(badge)}</span>
-      <span class="model" title="${esc(r.model)}">${esc(r.model)}</span>
+      <span class="model" title="${esc(r.model)}">${esc(r.model)}
+        ${r.effort ? `<small class="model-effort ${effortCls}">${esc(r.effort)}</small>` : ''}
+      </span>
       <span class="swapline ${swapCls}">${swapInner}</span>
       <span class="duration"><em>请求总耗时</em><strong>${esc(requestDuration(r))}</strong></span>
       <span class="status" data-s="${esc(r.status || '')}">
@@ -316,7 +315,6 @@ function cardHtml(r){
 
     <div class="card-sub">
       <button type="button" class="rid" title="${esc(r.rid)} · 双击复制完整请求号" aria-label="请求号 ${esc(shortId(r.rid))}，双击或按回车复制完整请求号">${esc(shortId(r.rid))}</button>
-      ${meta('effort', r.effort, effortCls)}
       ${r.expect ? meta('采集时预期', r.expect) : ''}
       ${meta('格式', r.text_format)}
       ${meta('创建', r.created_at)}
@@ -506,7 +504,14 @@ async function doDiagnose(){
         ? '最近一轮没有从内存里抽到响应对象 —— 响应对象只在请求生命周期内存在，换个 Codex 正在干活的时刻再看。'
         : ''}</p>`;
 
-  openModal('诊断 · 采集线程最近一轮观测', head + table, false);
+  const native = s?.native;
+  const phases = native ? `<h3>C++ 解析诊断</h3><pre>${esc(JSON.stringify(native, null, 2))}</pre>
+    <p>read/parse/prefilter_worker_seconds 是各线程累计时间，不能相加当作单轮耗时。
+    incomplete_candidates 包含无效内存片段，不等于漏采请求数；区域枚举耗时可能来自缓存。</p>` : '';
+  const candidates = `<details><summary>最近一轮请求候选（最多 50 条）</summary>
+    <p>candidate_only 表示仅识别到请求体形状，不参与自动配对；缺少 prev 的候选也不按时间猜测配对。</p>
+    <pre>${esc(JSON.stringify(s?.request_candidates || [], null, 2))}</pre></details>`;
+  openModal('诊断 · 采集线程最近一轮观测', head + table + phases + candidates, false);
 }
 
 function statusLabel(s){

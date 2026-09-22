@@ -76,7 +76,11 @@ class NativeScanner:
         self.last_workers = data['workers']
         self.region_cost = data['region_cost']
         self.metrics = {k: data.get(k, 0) for k in
-                        ('scan_cost', 'read_errors', 'read_worker_seconds', 'parse_worker_seconds')}
+                        ('scan_cost', 'read_errors', 'read_worker_seconds', 'parse_worker_seconds',
+                         'prefilter_worker_seconds', 'merge_cost', 'serialize_cost',
+                         'read_worker_max_seconds', 'prefilter_worker_max_seconds',
+                         'parse_worker_max_seconds', 'worker_max_seconds', 'owned_bytes', 'tasks',
+                         'parse_candidates', 'incomplete_candidates', 'supplemental_reads')}
         for rec in data['responses']:
             rec['_marks'] = int(rec.get('_marks', 0))
         return data

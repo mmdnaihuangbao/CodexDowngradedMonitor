@@ -8,7 +8,7 @@ import threading
 import time
 
 DEFAULT_DB = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'data', 'monitor.sqlite')
-DATA_VERSION = '0.1'
+DATA_VERSION = '0.2'
 VERDICTS = ('normal', 'subtask', 'incomplete', 'downgrade')
 
 def validation_reason(rec):
@@ -70,6 +70,8 @@ class HistoryStore:
             );
         ''')
         self.db.execute('INSERT OR IGNORE INTO data_version(id,version) VALUES (1,?)', (DATA_VERSION,))
+        # 0.2 only extends evidence JSON; historical responses and verdicts are untouched.
+        self.db.execute("UPDATE data_version SET version=? WHERE id=1 AND version='0.1'", (DATA_VERSION,))
         if self.db.execute('PRAGMA user_version').fetchone()[0] == 0:
             self.db.execute('PRAGMA user_version=1')
         self.data_version = self.db.execute('SELECT version FROM data_version WHERE id=1').fetchone()[0]
@@ -88,6 +90,8 @@ class HistoryStore:
         for request in requests:
             if not request.get('model'): continue
             data = {'prev': request.get('prev'), 'model': request['model'], 'source': request.get('source', 'memory')}
+            for key in ('thread_id', 'session_id', 'turn_id', 'root_turn_id', 'candidate_only'):
+                if request.get(key): data[key] = request[key]
             packed = self.pack(data)
             fingerprint = hashlib.sha256(packed.encode()).hexdigest()
             if fingerprint not in self._request_seen:
@@ -97,8 +101,11 @@ class HistoryStore:
         with self.lock, self.db:
             self.db.execute('BEGIN IMMEDIATE')
             for fingerprint, data, packed in evidence:
+                # Keep unverified candidates out of the legacy lookup column too: an older
+                # concurrently running backend does not understand candidate_only.
+                previous = None if data.get('candidate_only') else data['prev']
                 self.db.execute('INSERT OR IGNORE INTO request_evidence VALUES (?,?,?,?,?)',
-                                (fingerprint, data['prev'], data['model'], now, packed))
+                                (fingerprint, previous, data['model'], now, packed))
             for rec in records:
                 rid = rec['response_id']
                 existing = self.db.execute('SELECT payload FROM responses WHERE rid=?', (rid,)).fetchone()
@@ -168,7 +175,7 @@ class HistoryStore:
     def request_models(self, limit=6000):
         with self.lock:
             rows = self.db.execute('''SELECT previous_id,CASE WHEN COUNT(DISTINCT model)=1 THEN MIN(model) END
-                FROM request_evidence WHERE previous_id IS NOT NULL
+                FROM request_evidence WHERE previous_id IS NOT NULL AND json_extract(payload,'$.candidate_only') IS NULL
                 GROUP BY previous_id ORDER BY MAX(first_seen) DESC LIMIT ?''', (limit,)).fetchall()
             return dict(rows)
 
@@ -182,8 +189,14 @@ class HistoryStore:
 
     def lookup_request(self, previous):
         with self.lock:
-            row = self.db.execute('SELECT COUNT(DISTINCT model),MIN(model) FROM request_evidence WHERE previous_id=?',(previous,)).fetchone()
+            row = self.db.execute("SELECT COUNT(DISTINCT model),MIN(model) FROM request_evidence WHERE previous_id=? AND json_extract(payload,'$.candidate_only') IS NULL",(previous,)).fetchone()
         return row[0] > 0, row[1] if row[0] == 1 else None
+
+    def request_details(self, previous):
+        if not previous: return []
+        with self.lock:
+            rows = self.db.execute('SELECT payload,first_seen FROM request_evidence WHERE previous_id=? ORDER BY first_seen DESC LIMIT 50', (previous,)).fetchall()
+            return [{**json.loads(row[0]), 'first_seen': row[1]} for row in rows]
 
     def totals(self):
         with self.lock:
