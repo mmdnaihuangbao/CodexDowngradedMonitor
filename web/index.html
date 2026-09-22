@@ -3,14 +3,14 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Codex 模型降级监控</title>
-<link rel="icon" href="data:,">
+<title>降智雷达</title>
+<link rel="icon" type="image/png" href="/icon.png">
 <link rel="stylesheet" href="/style.css">
 </head>
 <body>
 <div class="workspace">
 <header class="topbar">
-  <div class="brand"><div class="brand-icon" aria-hidden="true">C<span>↘</span></div><div><div class="eyebrow">CODEX / MODEL MONITOR</div><h1>模型降级监控</h1></div></div>
+  <div class="brand"><div class="brand-icon" aria-hidden="true"><img src="/icon.png" alt=""></div><div><div class="eyebrow">CODEX / IQ DROP RADAR</div><h1>降智雷达</h1></div></div>
   <div class="connection"><span class="dot" id="live-dot"></span><span class="pill" id="status-pill">连接中…</span></div>
   <div class="actions">
     <button class="abtn" id="btn-diag" title="查看最近一轮扫描统计">诊断</button>
@@ -20,12 +20,11 @@
   </div>
 </header>
 <section class="overview" aria-label="监控概览">
-  <div class="section-intro"><div><p class="eyebrow">OVERVIEW</p><h2>每次响应，一目了然。</h2><p class="intro-note">追踪请求与响应模型，及时发现异常切换。</p></div><div class="expected"><span>预期模型</span><b id="m-expect">—</b></div></div>
   <div class="counts">
-    <button class="cnt c-normal" data-filter="normal"><span class="count-label"><i></i>正常响应<span class="count-arrow">↗</span></span><b id="c-normal">0</b><span class="count-note">请求与响应模型一致</span></button>
-    <button class="cnt c-subtask" data-filter="subtask"><span class="count-label"><i></i>子任务<span class="count-arrow">↗</span></span><b id="c-subtask">0</b><span class="count-note">子任务模型调用</span></button>
-    <button class="cnt c-incomplete" data-filter="incomplete"><span class="count-label"><i></i>证据不完整<span class="count-arrow">↗</span></span><b id="c-incomplete">0</b><span class="count-note">缺少请求信息，暂不能判定</span></button>
-    <button class="cnt c-downgrade" data-filter="downgrade"><span class="count-label"><i></i>模型降级<span class="count-arrow">↗</span></span><b id="c-downgrade">0</b><span class="count-note">需要关注的模型变更</span></button>
+    <button class="cnt c-normal" data-filter="normal"><span class="count-label"><i></i>正常响应<span class="count-arrow">↗</span></span><b id="c-normal">0</b></button>
+    <button class="cnt c-subtask" data-filter="subtask"><span class="count-label"><i></i>子任务<span class="count-arrow">↗</span></span><b id="c-subtask">0</b></button>
+    <button class="cnt c-incomplete" data-filter="incomplete"><span class="count-label"><i></i>证据不完整<span class="count-arrow">↗</span></span><b id="c-incomplete">0</b></button>
+    <button class="cnt c-downgrade" data-filter="downgrade"><span class="count-label"><i></i>模型降级<span class="count-arrow">↗</span></span><b id="c-downgrade">0</b></button>
   </div>
 </section>
 <details class="collector-details"><summary><span>采集详情</span><span class="collector-summary">已捕获 <b id="m-captured">0</b><span class="divider">/</span>请求配对 <b id="m-paired">0</b></span></summary>

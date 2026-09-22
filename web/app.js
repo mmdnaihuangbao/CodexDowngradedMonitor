@@ -1,5 +1,5 @@
 /* ============================================================
-   Codex 模型降级监控 · 前端逻辑
+   降智雷达 · 前端逻辑
    - 数据来源：/api/stream (SSE) —— 首帧 snapshot，后续 patch
    - 纯前端渲染，不做任何请求轮询（除按钮触发的诊断/配置）
    ============================================================ */
@@ -24,7 +24,7 @@ const S = {
 const $ = (id) => document.getElementById(id);
 const el = {
   dot: $('live-dot'), pill: $('status-pill'),
-  mPid:$('m-pid'), mExpect:$('m-expect'), mHz:$('m-hz'), mCost:$('m-cost'),
+  mPid:$('m-pid'), mHz:$('m-hz'), mCost:$('m-cost'),
   mBytes:$('m-bytes'), mWorkers:$('m-workers'), mIdle:$('m-idle'),
   mRounds:$('m-rounds'), mCaptured:$('m-captured'),
   mPaired:$('m-paired'), mLast:$('m-last'),
@@ -225,7 +225,6 @@ function renderStatus(){
 
   $('m-backend').textContent = st.backend === 'cpp' ? 'C++ · 原生扫描' : 'Python';
   el.mPid.textContent      = st.pid ?? '—';
-  el.mExpect.textContent   = st.expect || '未设置';
   el.mHz.textContent       = st.hz ? st.hz.toFixed(1) + ' 轮/秒' : '—';
   el.mCost.textContent     = st.scan_cost != null ? st.scan_cost.toFixed(3) + ' s' : '—';
   el.mBytes.textContent    = fmtBytes(st.scan_bytes);
@@ -297,8 +296,11 @@ function cardHtml(r){
                  <span class="res">${esc(r.model)}</span>`;
   }
 
-  const effortCls = r.effort === 'high' || r.effort === 'xhigh' ? 'effort-high'
-                  : r.effort === 'low' ? 'effort-low' : '';
+  // effort 只是请求侧档位，据此给文字上色；未知档位保持默认色。
+  // minimal 与 low 同级，是同一端最低档的两种写法，用同一颜色
+  const effortCls = r.effort === 'max' ? 'effort-max'
+                  : r.effort === 'high' || r.effort === 'xhigh' ? 'effort-high'
+                  : r.effort === 'medium' || r.effort === 'low' || r.effort === 'minimal' ? 'effort-low' : '';
 
   const meta = (label, val, cls) =>
     `<span class="meta-item"><em>${label}</em><b class="${cls || ''}">${esc(val ?? '-')}</b></span>`;

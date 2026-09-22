@@ -1138,6 +1138,9 @@ class Monitor:
 # ==================================================================
 
 WEB_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "web")
+# 图标只有根目录这一份：网页 favicon / 顶栏品牌图标由它提供，
+# 以后打包 exe 时同一个文件当程序图标，避免 web/ 下再放一份副本走样。
+ICON_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "icon.png")
 MIME = {".html": "text/html; charset=utf-8",
         ".css": "text/css; charset=utf-8",
         ".js": "application/javascript; charset=utf-8",
@@ -1188,6 +1191,19 @@ class Handler(BaseHTTPRequestHandler):
             return
         self._send(200, body, MIME.get(ext, "application/octet-stream"))
 
+    def _icon(self):
+        # /favicon.ico 与 /icon.png 都给同一张 PNG（浏览器会按内容识别格式）
+        if not os.path.isfile(ICON_FILE):
+            self._send(404, b"not found")
+            return
+        try:
+            with open(ICON_FILE, "rb") as fh:
+                body = fh.read()
+        except Exception:
+            self._send(500, b"read error")
+            return
+        self._send(200, body, "image/png")
+
     def _body_json(self):
         try:
             n = int(self.headers.get("Content-Length") or 0)
@@ -1225,8 +1241,8 @@ class Handler(BaseHTTPRequestHandler):
         elif path == "/api/health":
             self._json({"ok": True, "status": m.status, "backend": m.backend,
                         "service": "codex-model-monitor"})
-        elif path == "/favicon.ico":
-            self._send(204)
+        elif path in ("/favicon.ico", "/icon.png"):
+            self._icon()
         else:
             self._static(path.lstrip("/"))
 
