@@ -59,61 +59,59 @@ class ReadOnlyScanTests(unittest.TestCase):
             proc=sc.proc;sc.close()
             self.assertIsNotNone(proc.poll())
 
-    def test_python_liveness_without_wait_right(self):
-        sc=C.ProcessScanner(self.child.pid)
-        try:
-            self.assertTrue(sc.open())
-            for _ in range(3):self.assertTrue(sc.is_alive())
-        finally:sc.close()
-
-    def test_http_sse_and_backend_launchers(self):
+    def test_http_sse_and_launchers(self):
         opener=urllib.request.build_opener(urllib.request.ProxyHandler({}))
-        for backend in ('python','cpp'):
-            with self.subTest(backend=backend):
-                with socket.socket() as sock:
-                    sock.bind(('127.0.0.1',0));port=sock.getsockname()[1]
-                code="import collector as C; C.enumerate_codex=lambda:[{'pid':%d,'cmd':'app-server','mb':64}]; C.main()" % self.child.pid
-                server=subprocess.Popen([sys.executable,'-c',code,'--db',':memory:','--backend',backend,'--port',str(port),'--no-open','--idle','0.03','--log',str(ROOT/'_verify'/'native-integration.log')],cwd=ROOT,stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL,creationflags=subprocess.CREATE_NO_WINDOW)
-                def get(path,body=None):
-                    data=json.dumps(body).encode() if body is not None else None
-                    request=urllib.request.Request(f'http://127.0.0.1:{port}'+path,data=data,headers={'Content-Type':'application/json'})
-                    with opener.open(request,timeout=5) as r:return json.load(r)
+        # 这个用例会 POST /api/config，而配置路径固定在仓库里：先备份，跑完还原，别改掉本机设置。
+        config_path=ROOT/'config.json'
+        saved_config=config_path.read_bytes() if config_path.exists() else None
+        with socket.socket() as sock:
+            sock.bind(('127.0.0.1',0));port=sock.getsockname()[1]
+        code="import collector as C; C.enumerate_codex=lambda:[{'pid':%d,'cmd':'app-server','mb':64}]; C.main()" % self.child.pid
+        # 显式给 --expect：fixture 的 resp_sub 要"请求模型 == 响应模型 != 预期模型"才判 subtask，
+        # 不能让用例结果取决于本机 config.json 里的 expect。
+        server=subprocess.Popen([sys.executable,'-c',code,'--db',':memory:','--port',str(port),'--no-open','--idle','0.03','--expect','gpt-6-astra','--log',str(ROOT/'_verify'/'native-integration.log')],cwd=ROOT,stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL,creationflags=subprocess.CREATE_NO_WINDOW)
+        def get(path,body=None):
+            data=json.dumps(body).encode() if body is not None else None
+            request=urllib.request.Request(f'http://127.0.0.1:{port}'+path,data=data,headers={'Content-Type':'application/json'})
+            with opener.open(request,timeout=5) as r:return json.load(r)
+        try:
+            for _ in range(100):
                 try:
-                    for _ in range(100):
-                        try:
-                            snap=get('/api/snapshot')
-                            if snap['stats']['rounds']>=2:break
-                        except OSError:pass
-                        time.sleep(.05)
-                    else:self.fail('server failed to start')
-                    self.assertEqual(get('/api/health')['backend'],backend)
-                    self.assertEqual(snap['stats']['backend'],backend)
-                    self.assertEqual(snap['stats']['status'],'running')
-                    rows={r['rid']:r for r in snap['responses']}
-                    self.assertEqual(rows['resp_down']['verdict'],'downgrade')
-                    self.assertEqual(rows['resp_sub']['verdict'],'subtask')
-                    self.assertEqual(rows['resp_unknown']['verdict'],'incomplete')
-                    if backend=='cpp':self.assertEqual(rows['resp_normal']['req_model'],'gpt-6-astra')
-                    with opener.open(f'http://127.0.0.1:{port}/api/stream',timeout=5) as stream:
-                        frame=stream.readline().decode()
-                        self.assertTrue(frame.startswith('data: '))
-                        self.assertEqual(json.loads(frame[6:])['type'],'snapshot')
-                    self.assertTrue(get('/api/config',{'idle':0.05})['ok'])
-                    self.assertTrue(get('/api/diagnose')['ok'])
-                    result=subprocess.run([sys.executable,str(ROOT/'start.py'),'--db',':memory:','--backend',backend,'--port',str(port),'--status'],capture_output=True)
-                    self.assertEqual(result.returncode,0)
-                    self.assertTrue(get('/api/shutdown',{})['ok']);server.wait(timeout=8)
-                    self.assertEqual(server.returncode,0)
-                finally:
-                    if server.poll() is None:server.terminate();server.wait(timeout=5)
+                    snap=get('/api/snapshot')
+                    if snap['stats']['rounds']>=2:break
+                except OSError:pass
+                time.sleep(.05)
+            else:self.fail('server failed to start')
+            self.assertEqual(get('/api/health')['backend'],'cpp')
+            self.assertEqual(snap['stats']['backend'],'cpp')
+            self.assertEqual(snap['stats']['status'],'running')
+            rows={r['rid']:r for r in snap['responses']}
+            self.assertEqual(rows['resp_down']['verdict'],'downgrade')
+            self.assertEqual(rows['resp_sub']['verdict'],'subtask')
+            self.assertEqual(rows['resp_unknown']['verdict'],'incomplete')
+            self.assertEqual(rows['resp_normal']['req_model'],'gpt-6-astra')
+            with opener.open(f'http://127.0.0.1:{port}/api/stream',timeout=5) as stream:
+                frame=stream.readline().decode()
+                self.assertTrue(frame.startswith('data: '))
+                self.assertEqual(json.loads(frame[6:])['type'],'snapshot')
+            self.assertTrue(get('/api/config',{'idle':0.05})['ok'])
+            self.assertTrue(get('/api/diagnose')['ok'])
+            result=subprocess.run([sys.executable,str(ROOT/'start.py'),'--db',':memory:','--port',str(port),'--status'],capture_output=True)
+            self.assertEqual(result.returncode,0)
+            self.assertTrue(get('/api/shutdown',{})['ok']);server.wait(timeout=8)
+            self.assertEqual(server.returncode,0)
+        finally:
+            if server.poll() is None:server.terminate();server.wait(timeout=5)
+            if saved_config is not None:config_path.write_bytes(saved_config)
 
     def test_late_pairing_and_conflict(self):
         class FakeScanner:
-            last_regions=1;last_workers=1;region_cost=0;metrics={}
+            # workers 是 _ensure_process 比对线程配置时读的字段：假扫描器也要有。
+            workers=4;last_regions=1;last_workers=1;region_cost=0;metrics={}
             def is_alive(self):return True
             def close(self):pass
             def sweep_records(self):return self.batch
-        sc=FakeScanner();m=C.Monitor('expected',0,backend='cpp');m.scanner=sc;m.pid=123
+        sc=FakeScanner();m=C.Monitor('expected',0);m.scanner=sc;m.pid=123
         response={'response_id':'resp_late','model':'different','prev':'resp_parent','status':'completed'}
         def tick(requests,responses):
             sc.batch={'requests':requests,'responses':responses,'hit_blocks':1,'bytes':100}

@@ -7,14 +7,29 @@ import tempfile
 
 CONFIG_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'config.json')
 CONFIG_VERSION = '0.1'
-DEFAULTS = {'version': CONFIG_VERSION, 'host': 'localhost', 'port': 48766, 'cpp_port': 48778,
+DEFAULTS = {'version': CONFIG_VERSION, 'host': 'localhost', 'cpp_port': 48778,
             'expect': '', 'min_interval_ms': 0, 'workers': 4}
+
+
+def validate_port(value, label='HTTP 端口'):
+    """命令行 --port 的校验：只用于本次运行，不写回配置文件。"""
+    try:
+        number = float(value)
+    except (ValueError, TypeError, OverflowError):
+        raise ValueError(f'{label}必须是有效数字') from None
+    if isinstance(value, bool) or not math.isfinite(number) or not 1 <= number <= 65535:
+        raise ValueError(f'{label}须在 1～65535 之间')
+    if not number.is_integer():
+        raise ValueError(f'{label}必须是整数')
+    return int(number)
 
 
 def validate_config(data):
     if not isinstance(data, dict):
         raise ValueError('配置必须是 JSON 对象')
     config = {**DEFAULTS, **data}
+    # 旧配置里的 port 是已移除的 Python 采集器端口：读到就丢掉，不再写回文件。
+    config.pop('port', None)
     if config['version'] != CONFIG_VERSION:
         raise ValueError(f"不支持的配置版本：{config['version']}，当前支持 {CONFIG_VERSION}")
     if not isinstance(config['expect'], str):
@@ -23,8 +38,8 @@ def validate_config(data):
     if not isinstance(config['host'], str) or not re.fullmatch(r'[A-Za-z0-9_.-]+', config['host']):
         raise ValueError('监听地址须为 IPv4 地址或主机名，例如 localhost 或 0.0.0.0')
     for key, low, high, label in (('min_interval_ms', 0, 60000, '最小采样间隔'),
-                                  ('workers', 1, 16, '并行线程数'), ('port', 1, 65535, 'Python 端口'),
-                                  ('cpp_port', 1, 65535, 'C++ 端口')):
+                                  ('workers', 1, 16, '并行线程数'),
+                                  ('cpp_port', 1, 65535, 'HTTP 端口')):
         raw = config[key]
         try:
             value = float(raw)

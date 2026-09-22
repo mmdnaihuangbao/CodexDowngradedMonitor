@@ -14,13 +14,12 @@
 ## 数据库与启动
 
 ```powershell
-python start.py --backend cpp
-python start.py --backend python
+python start.py
 # 指定独立数据库（如需隔离某次运行）
-python start.py --backend cpp --db D:\MonitorData\history.sqlite
+python start.py --db D:\MonitorData\history.sqlite
 ```
 
-默认两种后端共享历史但仍各自独立扫描；不建议长期同时扫描同一个进程。指定 `--db` 不会改变正在运行实例的数据库，请先停止该实例后重新启动。
+指定 `--db` 不会改变正在运行实例的数据库，请先停止该实例后重新启动。
 
 `data/` 已加入 Git 忽略。数据库包括模型、请求号、状态和时间等已提取元数据，不保存整个进程的原始内存或完整对话正文。备份运行中的 SQLite 请使用 SQLite backup 接口，或先正常停止服务后复制文件，不能仅复制运行中的主文件而忽略尚未合并的 WAL。
 

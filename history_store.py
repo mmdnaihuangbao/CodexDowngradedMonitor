@@ -98,7 +98,7 @@ class HistoryStore:
     def pack(rec):
         return json.dumps(rec, ensure_ascii=False, separators=(',', ':'), sort_keys=True)
 
-    def save_batch(self, records, requests=(), backend='python'):
+    def save_batch(self, records, requests=(), backend='cpp'):
         records = list(records)
         evidence = []
         for request in requests:

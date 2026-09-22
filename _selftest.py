@@ -35,6 +35,10 @@ env.pop("HTTPS_PROXY", None)
 env.pop("http_proxy", None)
 env.pop("https_proxy", None)
 
+# 本脚本会 POST /api/config，而配置路径固定在仓库里：先备份，跑完还原，别改掉本机设置。
+CONFIG_PATH = os.path.join(ROOT, "config.json")
+SAVED_CONFIG = open(CONFIG_PATH, "rb").read() if os.path.exists(CONFIG_PATH) else None
+
 proc = subprocess.Popen(
     [PY, "collector.py", "--port", str(PORT), "--no-open", "--workers", "4", "--idle", "0"],
     cwd=ROOT, stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=env)
@@ -112,6 +116,9 @@ finally:
     except subprocess.TimeoutExpired:
         proc.kill()
         out, err = proc.communicate()
+    if SAVED_CONFIG is not None:
+        with open(CONFIG_PATH, "wb") as stream:
+            stream.write(SAVED_CONFIG)
 
 print("\n== 控制台输出检查 ==")
 print("  stdout bytes =", len(out or b""), "| stderr bytes =", len(err or b""))

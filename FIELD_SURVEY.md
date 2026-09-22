@@ -272,12 +272,13 @@
 | `tool_choice` | str | 4 | 4/4/4 |
 | `type` | str | 4 | 4/4/4 |
 
-## 可复用的只读调查脚本
+## 可复用的只读调查脚本（已移除）
 
-```powershell
-python -B tools/survey_fields.py --output _verify/field-survey.json
-```
+> **2026-09-22：`tools/survey_fields.py` 已随 Python 采集器一起移除。** 它建立在 Python 只读内存读取器
+> （`ProcessScanner`）之上，而该读取器与整个 Python 采集后端已下线；本文件上方的字段清单与样例保留为
+> **当时的调查记录**，不再有对应工具可以复跑。
 
-每次调用只遍历当前发现的小写 `codex.exe` 引擎进程一次，输出聚合清单。它不会启动采集服务、修改配置或业务数据库；目标未运行时报告进程列表为空。该脚本用于字段调查，不是测试脚本。
-
-需要对照真实值时，显式添加 `--examples`，例如 `python -B tools/survey_fields.py --examples --output _verify/field-examples-1.json`。此模式只允许写入已经被 Git 忽略且未被跟踪的 `_verify` 路径，样例原值不截断。私有对照页面为 `_verify/FIELD_EXAMPLES.html`，完整值与来源为 `_verify/field-examples.json`；本文件保持不含真实样例。
+当时的用法（仅作记录，命令已不可运行）：`python -B tools/survey_fields.py --output _verify/field-survey.json`
+每次只遍历一次当前发现的小写 `codex.exe` 引擎进程并输出聚合清单，不启动采集服务、不改配置或业务数据库。
+`--examples` 模式只允许写入被 Git 忽略且未被跟踪的 `_verify` 路径，样例原值不截断；私有对照页面为
+`_verify/FIELD_EXAMPLES.html`，完整值与来源为 `_verify/field-examples.json`，本文件保持不含真实样例。

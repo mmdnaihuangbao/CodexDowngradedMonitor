@@ -1,10 +1,10 @@
 # Codex 模型降级监控（常驻采集器 + 本地 Web 面板）
 
-> **历史记录已持久化**：两种后端共用 `data/monitor.sqlite`，支持启动恢复、服务端分页、起止日历筛选及疑似样本隔离。详见 [历史记录说明](HISTORY.md)。
+> **历史记录已持久化**：历史库为 `data/monitor.sqlite`，支持启动恢复、服务端分页、起止日历筛选及疑似样本隔离。详见 [历史记录说明](HISTORY.md)。
 
-> **2026-09-20：新增 C++ 采集后端。** 双击 `start-cpp.bat`（默认 48778）或 `start-python.bat`（默认 48766），C++ 模式可用 `stop-cpp.bat` 停止；命令行用 `python start.py --backend cpp/python`。C++ 负责扫描和解析，Python 保留网页服务。两种后端的进程发现都已改用 Windows API，不再运行 PowerShell 枚举；存活检测、延迟配对与歧义处理也已修正。以下旧版原理说明以 [C++ 采集器说明](cpp_collector/README.md) 中的更新为准。
+> **2026-09-22：C++ 采集器是唯一的扫描后端，Python 采集器已移除。** 双击 `start-cpp.bat`（等价于 `start.bat`，默认 48778），用 `stop-cpp.bat` 停止；命令行 `python start.py`（启动 / `--status` / `--stop`）。只读内存扫描与解析全部由 C++ 常驻辅助进程负责，Python 进程只做判定、持久化、只读证据索引与网页服务。进程发现走 Windows API，不运行 PowerShell 枚举。细节以 [C++ 采集器说明](cpp_collector/README.md) 为准。
 
-> **2026-09-22：Python 内存扫描后端（`--backend python`）已废弃。** 它保留在仓库里只为兼容旧命令与旧脚本，不再维护、不再修问题；请使用 `start-cpp.bat`（`--backend cpp`）作为唯一的扫描后端。Python 进程仍然负责网页服务与判定层，请求模型的证据补齐也在这一侧（见下文「请求模型证据」）。
+> **2026-09-22：`--backend` 选项已取消，不再有后端可切换。** Python 内存扫描器（`ParallelScanner` / `extract_*` / `ProcessScanner`）、`start-python.bat`、`_scancheck.py`、`cpp_collector/benchmark.py`、`tools/survey_fields.py` 以及配置里的 `port` 键随之下线；历史库的 `backend` 字段保留，用于区分旧记录来源。
 
 > **2026-09-22：新增只读旁路证据索引，补齐「找不到前序请求」的请求模型（已验收）。** Python 服务侧新增两条只读通道（codex 自有 `logs_2.sqlite` 的响应号/item 前缀、会话 rollout 的 `token_usage_record`），与内存配对交叉验证 **188/188 零冲突**，抓包 21 条真实降级样本 **21/21 给出请求侧模型**；本机历史里 `incomplete`（非疑似）由 22 条降到个位数（验收时为 6 条）。原理、到达时序与已知边界见下文「[请求模型证据](#请求模型证据三条来源与到达时序)」，调查结论见 [请求模型来源调查](cpp_collector/REQUEST_MODEL_SOURCES.md#2026-09-22-补充两条精确通道已验证)。
 
@@ -20,17 +20,19 @@
 │                                                                    │
 │  采集线程（常驻，永不因没人在看而停）                                │
 │  ┌──────────────┐   ┌───────────────────────────────────────┐      │
-│  │ 进程发现/重连 │──▶│ ParallelScanner  4 个工作线程 × 4 句柄 │      │
+│  │ 进程发现/重连 │──▶│ C++ 采集器  4 个工作线程 × 4 句柄       │      │
 │  └──────────────┘   └──────────────┬────────────────────────┘      │
-│                                    │ 边扫边消费（1MB/块）            │
-│                                    ▼                              │
-│                     ┌──────────────────────────────┐               │
+│                                    │ C++ 侧分块预筛后回传            │
+│                     ┌──────────────▼───────────────┐               │
 │                     │ 状态库 Monitor（加锁）         │               │
 │                     │ 去重 / 配对 / 四级判定         │               │
 │                     └──────────────┬───────────────┘               │
 │                                    │ 变更时 publish                 │
 │                                    ▼                              │
 │                          Broker（SSE 订阅队列）                     │
+│                                    │                              │
+│  证据线程（2s，只读旁路）      ◀────┤                              │
+│  codex 日志 item 前缀 / rollout      │                              │
 │                                    │                              │
 │  HTTP 视图服务（主线程，只读）  ◀───┘                              │
 │  ┌────────────────────────────────────────────────┐                │
@@ -161,7 +163,7 @@ Codex（codex.exe）收到服务端 WebSocket 帧后，会把响应对象反序�
 
 放宽不会引入误报：对象仍须以 `{"id":"resp_` 开头且命中 ≥2 个服务端独占字段。
 
-> 这个 bug 是用 `_scancheck.py`（假 codex 进程）跑出来的，不是推测：
+> 这个 bug 是用 `_scancheck.py`（假 codex 进程，该脚本已随 Python 采集器一起下线）跑出来的，不是推测：
 > 修正前 3 个响应只认出 1 个，修正后全部命中、四级判定全对。
 
 ---
@@ -169,7 +171,9 @@ Codex（codex.exe）收到服务端 WebSocket 帧后，会把响应对象反序�
 ## 三、文件
 
 ```
-collector.py      采集器 + HTTP 视图服务（静默，无任何控制台输出）
+collector.py      服务进程：驱动 C++ 扫描、判定与持久化、HTTP 视图服务（静默，无控制台输出）
+evidence_index.py 只读旁路证据索引（codex 自有日志 item 前缀 / 会话 rollout），补齐请求模型
+cpp_collector/    C++ 采集器：唯一的只读内存扫描与解析实现，以及它自己的测试
 start.py          启动器：启动 / 状态 / 停止（真正的控制逻辑都在这里）
 start.bat         双击启动的入口 —— 只做「找 python + 调用 start.py」，
                   且全文件纯 ASCII + CRLF（原因见下方「bat 的编码坑」）
@@ -178,9 +182,6 @@ web/style.css     暗色样式
 web/app.js        SSE 客户端 + 卡片渲染
 _selftest.py      接口自检（不依赖 codex）：静态资源 / snapshot / SSE / config / clear /
                   端口顺延 / 停止，并断言控制台零输出
-_scancheck.py     扫描链路自检（不依赖 codex）：造一个「假 codex」子进程，
-                  在它堆里放正常/降级/子任务/不完整四个响应对象，
-                  验证抽取 + 配对 + 四级判定 + 降级提示隔离（不完整绝不报警）全链路
 collector.log     运行日志（自动生成，与前端「运行日志」抽屉同源）
 ```
 
@@ -210,7 +211,6 @@ python start.py --stop                 :: 停止服务
 {
   "version": "0.1",
   "host": "localhost",
-  "port": 48766,
   "cpp_port": 48778,
   "expect": "",
   "min_interval_ms": 0,
@@ -218,7 +218,8 @@ python start.py --stop                 :: 停止服务
 }
 ```
 
-- `port` 是 Python 后端端口，`cpp_port` 是 C++ 后端端口。端口被占用仍自动顺延，启动器输出实际地址。
+- `cpp_port` 是 HTTP 服务端口。端口被占用仍自动顺延，启动器输出实际地址。命令行 `--port` 只影响当次运行。
+- 旧配置里的 `port` 键（原 Python 采集器端口）在下次写入配置时会被自动清掉，不影响启动。
 - `host` 设置为 `0.0.0.0` 时监听所有 IPv4 网卡，局域网使用 `http://本机局域网IP:实际端口/` 访问。本机浏览器使用 `localhost`。
 - 网页可保存预期模型、最小采样间隔和线程数。间隔范围 0～60000ms，线程范围 1～16；线程变更在下一轮扫描时应用，C++ 辅助进程可重启，HTTP 服务保持运行。
 - 两轮开始时间至少相隔 `min_interval_ms`；扫描耗时超过间隔时直接开始下一轮，0 表示连续扫描。`--idle` / 采集器的 `--interval` 保留为秒单位别名，统一采用最小间隔语义。
@@ -248,7 +249,7 @@ cmd.exe 用**本地代码页**（中文 Windows 是 GBK）解析 `.bat`。文件
 `start.py` 是给日常用的；`collector.py` 也可以直接跑，两者不冲突：
 
 ```bat
-python collector.py --port 48766 --workers 6 --idle 0
+python collector.py --port 48778 --workers 6 --idle 0
 ```
 
 > **控制台不会有任何输出**（stdout/stderr 已接到空设备，日志只落文件 + 前端）。
@@ -258,8 +259,8 @@ python collector.py --port 48766 --workers 6 --idle 0
 ### 自检（不需要 codex）
 
 ```bat
-python _selftest.py      :: 接口层
-python _scancheck.py     :: 扫描/判定链路（强烈建议先跑这个）
+python _selftest.py                        :: 接口层
+python cpp_collector/tests/test_collectors.py   :: C++ 采集器解析 + 判定链路（需先编译）
 ```
 
 ## 五、接口

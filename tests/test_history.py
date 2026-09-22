@@ -79,11 +79,12 @@ class HistoryTests(unittest.TestCase):
 
     def test_failed_write_is_retried_without_losing_cached_state(self):
         class Scanner:
-            last_regions=1;last_workers=1;region_cost=0;metrics={}
+            # workers 是 _ensure_process 比对线程配置时读的字段：假扫描器也要有。
+            workers=4;last_regions=1;last_workers=1;region_cost=0;metrics={}
             def is_alive(self):return True
             def sweep_records(self):return {'responses':[rec(1)],'requests':[],'hit_blocks':1,'bytes':1}
             def close(self):pass
-        m=C.Monitor('test-model',0,backend='cpp',db_path=self.path);m.scanner=Scanner();m.pid=1
+        m=C.Monitor('test-model',0,db_path=self.path);m.scanner=Scanner();m.pid=1
         save=m.store.save_batch
         def fail(*args):raise OSError('simulated disk write failure')
         m.store.save_batch=fail
@@ -97,11 +98,12 @@ class HistoryTests(unittest.TestCase):
 
     def test_eviction_keeps_archive_and_late_evidence(self):
         class Scanner:
-            last_regions=1;last_workers=1;region_cost=0;metrics={}
+            # workers 是 _ensure_process 比对线程配置时读的字段：假扫描器也要有。
+            workers=4;last_regions=1;last_workers=1;region_cost=0;metrics={}
             def is_alive(self):return True
             def sweep_records(self):return self.batch
             def close(self):pass
-        m=C.Monitor('test-model',0,backend='cpp',db_path=self.path);sc=Scanner();m.scanner=sc;m.pid=1
+        m=C.Monitor('test-model',0,db_path=self.path);sc=Scanner();m.scanner=sc;m.pid=1
         rows=[rec(i) for i in range(3105)]
         rows[0]['prev']='resp_late_parent';rows[0]['model']='different'
         sc.batch={'responses':rows,'requests':[],'hit_blocks':1,'bytes':1}

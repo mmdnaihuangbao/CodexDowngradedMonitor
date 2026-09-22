@@ -34,14 +34,13 @@ import sys
 import time
 import urllib.request
 from history_store import DEFAULT_DB
-from config_store import load_config, validate_config, browser_host
+from config_store import load_config, validate_config, validate_port, browser_host
 
 ROOT = os.path.dirname(os.path.abspath(__file__))
 COLLECTOR = os.path.join(ROOT, "collector.py")
 LOGFILE = os.path.join(ROOT, "collector.log")
 
-DEFAULT_PORT = 48766
-CPP_PORT = 48778
+DEFAULT_PORT = 48778
 PORT_TRIES = 12
 
 # subprocess 创建标志：无控制台窗口 + 与父进程解绑（父进程退出后继续跑）
@@ -73,7 +72,7 @@ def api(port, path, method="GET", body=None, timeout=2.0, host="localhost"):
         return json.loads(r.read().decode("utf-8"))
 
 
-def find_running(port, backend=None, host="localhost"):
+def find_running(port, host="localhost"):
     """在 port..port+11 范围内找我们自己的服务；找不到返回 None。
 
     端口被占用时采集器会自动顺延，所以这里要扫一段而不是只看一个端口。
@@ -82,8 +81,7 @@ def find_running(port, backend=None, host="localhost"):
     for p in range(port, min(65536, port + PORT_TRIES)):
         try:
             h = api(p, "/api/health", timeout=1.0, host=host)
-            if (isinstance(h, dict) and h.get("ok")
-                    and (backend is None or h.get("backend", "python") == backend)):
+            if isinstance(h, dict) and h.get("ok"):
                 return p
         except Exception:
             continue
@@ -102,8 +100,8 @@ def open_browser(port, no_open, host="localhost"):
         pass
 
 
-def cmd_status(port, backend=None, host="localhost"):
-    p = find_running(port, backend, host)
+def cmd_status(port, host="localhost"):
+    p = find_running(port, host)
     if p is None:
         say("状态：未在运行")
         return 1
@@ -121,7 +119,6 @@ def cmd_status(port, backend=None, host="localhost"):
     }.get(s.get("status"), s.get("status"))
 
     say(f"状态       : {status_cn}")
-    say(f"采集后端   : {s.get('backend', 'python')}")
     say(f"面板       : http://{browser_host(host)}:{p}/")
     say(f"目标进程   : pid={s.get('pid')}")
     say(f"预期模型   : {s.get('expect')}")
@@ -138,8 +135,8 @@ def cmd_status(port, backend=None, host="localhost"):
     return 0
 
 
-def cmd_stop(port, backend=None, host="localhost"):
-    p = find_running(port, backend, host)
+def cmd_stop(port, host="localhost"):
+    p = find_running(port, host)
     if p is None:
         say("状态：未在运行，无需停止")
         return 0
@@ -149,7 +146,7 @@ def cmd_stop(port, backend=None, host="localhost"):
         pass
     for _ in range(40):
         time.sleep(0.25)
-        if find_running(p, backend, host) is None:
+        if find_running(p, host) is None:
             say(f"已停止（端口 {p} 已释放）")
             return 0
     say(f"已发送停止指令，但端口 {p} 仍被占用；可直接结束该 python 进程")
@@ -160,7 +157,7 @@ def cmd_foreground(args):
     """前台运行：直接在当前进程里跑采集器，Ctrl+C 即停"""
     sys.path.insert(0, ROOT)
     argv = [COLLECTOR, "--host", args.host, "--port", str(args.port), "--workers", str(args.workers),
-            "--min-interval-ms", str(args.min_interval_ms), "--expect", args.expect, "--backend", args.backend, "--db", args.db, "--no-open"]
+            "--min-interval-ms", str(args.min_interval_ms), "--expect", args.expect, "--db", args.db, "--no-open"]
     if args.log:
         argv += ["--log", args.log]
     sys.argv = argv
@@ -169,12 +166,11 @@ def cmd_foreground(args):
 
 
 def cmd_start(args):
-    if args.backend == "cpp":
-        from native_scanner import EXECUTABLE
-        if not os.path.isfile(EXECUTABLE):
-            say("尚未编译 C++ 采集器，请运行 powershell -ExecutionPolicy Bypass -File cpp_collector/build.ps1")
-            return 2
-    running = find_running(args.port, args.backend, args.host)
+    from native_scanner import EXECUTABLE
+    if not os.path.isfile(EXECUTABLE):
+        say("尚未编译 C++ 采集器，请运行 powershell -ExecutionPolicy Bypass -File cpp_collector/build.ps1")
+        return 2
+    running = find_running(args.port, args.host)
     if running is not None:
         say(f"服务已在运行（端口 {running}），直接打开面板。")
         say(f"前端地址：http://{browser_host(args.host)}:{running}/")
@@ -192,7 +188,7 @@ def cmd_start(args):
     interp = sys.executable or "python"
     argv = [interp, COLLECTOR, "--host", args.host, "--port", str(args.port),
             "--workers", str(args.workers), "--min-interval-ms", str(args.min_interval_ms),
-            "--expect", args.expect, "--backend", args.backend, "--db", args.db, "--no-open"]
+            "--expect", args.expect, "--db", args.db, "--no-open"]
     if args.log:
         argv += ["--log", args.log]
 
@@ -210,7 +206,7 @@ def cmd_start(args):
     real = None
     for _ in range(60):
         time.sleep(0.25)
-        real = find_running(args.port, args.backend, args.host)
+        real = find_running(args.port, args.host)
         if real is not None:
             break
 
@@ -227,13 +223,12 @@ def cmd_start(args):
     say(f"  扫描线程    {args.workers}    最小采样间隔 {args.min_interval_ms}ms"
         + ("（连续扫描）" if args.min_interval_ms == 0 else ""))
     say(f"  预期模型    {args.expect or '未设置'}")
-    say(f"  采集后端    {args.backend}")
     if real != args.port:
         say(f"  注意        端口 {args.port} 被占用，已自动改用 {real}")
     say(f"  日志        {args.log or LOGFILE}")
     say("  " + "-" * 46)
-    say(f"  查看状态    python start.py --backend {args.backend} --status --host {args.host} --port {real}")
-    say(f"  停止服务    python start.py --backend {args.backend} --stop --host {args.host} --port {real}")
+    say(f"  查看状态    python start.py --status --host {args.host} --port {real}")
+    say(f"  停止服务    python start.py --stop --host {args.host} --port {real}")
     say("")
     say("  采集器已在后台静默运行。未启动 Codex 时面板会显示"
         "「未发现 codex.exe」，属正常，启动 Codex 后会自动接入。")
@@ -253,11 +248,11 @@ def main():
     ap = argparse.ArgumentParser(
         description="Codex 模型降级监控 · 启动器（启动 / 状态 / 停止）")
     ap.add_argument("--db", default=DEFAULT_DB, help="SQLite 历史库文件")
-    ap.add_argument("--backend", choices=("python", "cpp"), default="python")
     ap.add_argument("--host", default=config["host"], help="HTTP 监听地址，0.0.0.0 支持局域网访问")
     ap.add_argument("--port", type=int, default=None,
-                    help=f"监听端口（Python 默认 {DEFAULT_PORT}，C++ 默认 {CPP_PORT}；被占用自动顺延）")
-    ap.add_argument("--workers", type=int, default=config["workers"], help="并行扫描线程数（1～16，默认读取配置）")
+                    help=f"HTTP 监听端口（默认 {DEFAULT_PORT}，被占用自动顺延）")
+    ap.add_argument("--workers", type=int, default=config["workers"],
+                    help="C++ 采集器并行扫描线程数（1～16，默认读取配置）")
     ap.add_argument("--min-interval-ms", type=float, default=None, help="最小采样间隔，单位 ms")
     ap.add_argument("--idle", type=float, default=None, help="最小采样间隔的秒单位别名")
     ap.add_argument("--expect", default=config["expect"], help="预期模型，默认留空")
@@ -267,20 +262,26 @@ def main():
     ap.add_argument("--stop", action="store_true", help="停止正在运行的服务")
     ap.add_argument("--status", action="store_true", help="查看运行状态")
     args = ap.parse_args()
-    if args.port is None: args.port = config["cpp_port" if args.backend == "cpp" else "port"]
+    if args.port is None:
+        args.port = config["cpp_port"]
+    else:
+        try:
+            args.port = validate_port(args.port)
+        except ValueError as exc:
+            ap.error(str(exc))
     if args.min_interval_ms is None:
         args.min_interval_ms = config["min_interval_ms"] if args.idle is None else args.idle * 1000
     try:
         effective = validate_config({"expect": args.expect, "workers": args.workers,
-                                     "min_interval_ms": args.min_interval_ms, "host": args.host, "port": args.port})
+                                     "min_interval_ms": args.min_interval_ms, "host": args.host})
     except ValueError as exc:
         ap.error(str(exc))
     args.expect = effective["expect"]
 
     if args.status:
-        return cmd_status(args.port, args.backend, args.host)
+        return cmd_status(args.port, args.host)
     if args.stop:
-        return cmd_stop(args.port, args.backend, args.host)
+        return cmd_stop(args.port, args.host)
     return cmd_start(args)
 
 

@@ -1,7 +1,6 @@
 {
   "version": "0.1",
   "host": "localhost",
-  "port": 48766,
   "cpp_port": 48778,
   "expect": "",
   "min_interval_ms": 25,

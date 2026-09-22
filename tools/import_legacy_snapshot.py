@@ -32,7 +32,7 @@ def import_snapshot(snapshot, store):
         records.append(record)
         if record.get('prev') and record.get('_req_model'):
             requests.append({'prev':record['prev'],'model':record['_req_model'],'source':'legacy_snapshot'})
-    backend=snapshot.get('stats',{}).get('backend','python')
+    backend=snapshot.get('stats',{}).get('backend','cpp')
     store.save_batch(records,requests,backend)
     for line in snapshot.get('logs',[]):store.log(line,backend)
     return len(records)

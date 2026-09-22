@@ -1,11 +1,14 @@
 #!/usr/bin/env python
 # -*- coding: utf-8 -*-
 """
-Codex 模型降级监控 · 后端采集器 + 本地 HTTP 服务
-================================================
+Codex 模型降级监控 · 服务进程（判定层 + HTTP + 只读证据索引）
+==========================================================
 
-原理完全继承 codex_model_watch2.py
-----------------------------------
+内存扫描由 C++ 常驻辅助进程完成（`cpp_collector/`），本进程只负责：驱动扫描、判定与聚合、
+告警与持久化、只读旁路证据索引、本地 HTTP 视图服务。
+
+原理（扫描侧）
+--------------
 Codex (codex.exe) 收到服务端 WebSocket 帧后会把响应对象反序列化到堆内存，
 该对象含服务端权威字段 `model`：
 
@@ -13,10 +16,11 @@ Codex (codex.exe) 收到服务端 WebSocket 帧后会把响应对象反序列化
      ...,"max_tool_calls":null,"model":"gpt-6-astra","moderation":null,...,
      "safety_identifier":"user-...","reasoning":{"effort":"xhigh"}}
 
-判据链：
+C++ 采集器只读扫描这块内存，把命中的响应/请求字段交回本进程；判据链：
   1. 只读扫描（VirtualQueryEx + ReadProcessMemory），不注入、不提权
   2. 只认「服务端下发」的对象（命中 >=2 个服务端独占字段，且不含客户端请求特征）
-  3. 降级 = 请求模型 ≠ 响应模型；配对依据 响应.prev == 请求.previous_response_id
+  3. 降级 = 请求模型 ≠ 响应模型；请求模型优先取 响应.prev == 请求.previous_response_id，
+     响应没有前序响应号时取只读旁路证据（codex 日志 item 前缀 / 会话 rollout）
   4. 预期模型非空时保留子任务启发式；为空时不主动标记子任务
 
 四级分类：
@@ -54,18 +58,17 @@ HTTP 接口
 
 用法
 ----
-    python collector.py                     # 默认 localhost:48766，自动打开浏览器
+    python start.py                          # 推荐入口：启动 / 状态 / 停止都在这里
+    python collector.py                      # 直接跑：默认 localhost:48778，自动打开浏览器
     python collector.py --port 9000
-    python collector.py --workers 6         # 并行扫描线程数
+    python collector.py --workers 6          # C++ 采集器并行扫描线程数
     python collector.py --min-interval-ms 100 # 最小采样间隔，默认 0ms = 连续扫
     python collector.py --expect gpt-6-astra
-    python collector.py --no-open           # 不自动开浏览器
+    python collector.py --no-open            # 不自动开浏览器
     python collector.py --log run.log
 """
 
 import argparse
-import ctypes
-import ctypes.wintypes as wt
 import json
 import math
 import os
@@ -79,7 +82,8 @@ from datetime import datetime
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import urlparse, parse_qs
 from history_store import HistoryStore, DEFAULT_DB, validation_reason
-from config_store import load_config, save_config, validate_config, browser_host, CONFIG_VERSION
+from config_store import (load_config, save_config, validate_config, validate_port, browser_host,
+                          CONFIG_VERSION)
 from evidence_index import (EvidenceIndex, INDEX_FORMAT, ITEM_BUCKET_LEN, MIN_ITEM_SHARE,
                             common_prefix_length)
 
@@ -134,298 +138,15 @@ def fmt_epoch(v):
 
 
 # ==================================================================
-# 1. 内存读取（与原脚本逐字一致）
+# 1. 内存读取：由 C++ 采集器负责
 # ==================================================================
-
-PROCESS_QUERY_INFORMATION = 0x0400
-PROCESS_VM_READ = 0x0010
-MEM_COMMIT = 0x1000
-PAGE_NOACCESS = 0x01
-PAGE_GUARD = 0x100
-MAX_REGION = 256 << 20
-
-
-class MEMORY_BASIC_INFORMATION(ctypes.Structure):
-    _fields_ = [
-        ("BaseAddress", ctypes.c_void_p),
-        ("AllocationBase", ctypes.c_void_p),
-        ("AllocationProtect", wt.DWORD),
-        ("__alignment1", wt.DWORD),
-        ("RegionSize", ctypes.c_size_t),
-        ("State", wt.DWORD),
-        ("Protect", wt.DWORD),
-        ("Type", wt.DWORD),
-        ("__alignment2", wt.DWORD),
-    ]
-
-
-class ProcessScanner:
-    """对目标进程做只读内存扫描"""
-
-    # PAGE_READONLY / READWRITE / WRITECOPY / EXECUTE_READ / EXECUTE_READWRITE / EXECUTE_WRITECOPY
-    READABLE_PROTECT = 0x02 | 0x04 | 0x08 | 0x20 | 0x40 | 0x80
-    MEM_PRIVATE = 0x10000
-    MEM_MAPPED = 0x20000
-    SCAN_TYPES = MEM_PRIVATE | MEM_MAPPED
-    CHUNK = 1 << 20
-
-    def __init__(self, pid):
-        self.pid = pid
-        self.k32 = ctypes.WinDLL("kernel32", use_last_error=True)
-        self.k32.OpenProcess.argtypes = [wt.DWORD, wt.BOOL, wt.DWORD]
-        self.k32.OpenProcess.restype = wt.HANDLE
-        self.k32.CloseHandle.argtypes = [wt.HANDLE]
-        self.k32.CloseHandle.restype = wt.BOOL
-        self.k32.GetExitCodeProcess.argtypes = [wt.HANDLE, ctypes.POINTER(wt.DWORD)]
-        self.k32.GetExitCodeProcess.restype = wt.BOOL
-        self.k32.VirtualQueryEx.argtypes = [wt.HANDLE, ctypes.c_void_p,
-                                            ctypes.POINTER(MEMORY_BASIC_INFORMATION), ctypes.c_size_t]
-        self.k32.VirtualQueryEx.restype = ctypes.c_size_t
-        self.k32.ReadProcessMemory.argtypes = [wt.HANDLE, ctypes.c_void_p, ctypes.c_void_p,
-                                              ctypes.c_size_t, ctypes.POINTER(ctypes.c_size_t)]
-        self.k32.ReadProcessMemory.restype = wt.BOOL
-        self.buf = ctypes.create_string_buffer(self.CHUNK)
-        self.h = None
-
-    def open(self):
-        self.h = self.k32.OpenProcess(
-            PROCESS_QUERY_INFORMATION | PROCESS_VM_READ, False, self.pid)
-        return bool(self.h)
-
-    def close(self):
-        if self.h:
-            try:
-                self.k32.CloseHandle(self.h)
-            except Exception:
-                pass
-            self.h = None
-
-    def is_alive(self):
-        """只查询退出码；不对缺少 SYNCHRONIZE 权限的句柄执行等待。"""
-        if not self.h:
-            return False
-        try:
-            code = wt.DWORD()
-            return bool(self.k32.GetExitCodeProcess(self.h, ctypes.byref(code))) and code.value == 259
-        except Exception:
-            return False
-
-    def iter_readable(self):
-        addr = 0
-        while addr < 0x7FFFFFFFFFFF:
-            mbi = MEMORY_BASIC_INFORMATION()
-            if self.k32.VirtualQueryEx(
-                    self.h, ctypes.c_void_p(addr),
-                    ctypes.byref(mbi), ctypes.sizeof(mbi)) == 0:
-                break
-            base = mbi.BaseAddress or 0
-            size = mbi.RegionSize or 0
-            if size == 0:
-                break
-            if (mbi.State == MEM_COMMIT
-                    and (mbi.Type & self.SCAN_TYPES)
-                    and (mbi.Protect & self.READABLE_PROTECT)
-                    and not (mbi.Protect & PAGE_NOACCESS)
-                    and not (mbi.Protect & PAGE_GUARD)
-                    and size <= MAX_REGION):
-                yield base, size
-            addr = base + size
-
-    def read(self, addr, size):
-        size = min(size, self.CHUNK)
-        rd = ctypes.c_size_t(0)
-        ok = self.k32.ReadProcessMemory(
-            self.h, ctypes.c_void_p(addr), self.buf, size, ctypes.byref(rd))
-        if ok and rd.value:
-            return self.buf.raw[:rd.value]
-        return b""
-
-    def sweep(self, regions, consumer):
-        """扫描指定区域列表，把「疑似含响应对象」的块立刻交给 consumer。
-
-        与旧版 scan_hits 的差别：不再把命中块攒进 list 再返回，
-        而是边扫边消费 —— 1MB/块的命中数据不会在内存里堆积。
-        返回本轮实际读取的字节数。
-        """
-        nbytes = 0
-        for base, size in regions:
-            off = 0
-            while off < size:
-                n = min(self.CHUNK, size - off)
-                data = self.read(base + off, n)
-                if data:
-                    nbytes += len(data)
-                    # 预筛：同时出现 "resp_ 和 "model" 才送出去解析
-                    if b'"resp_' in data and b'"model"' in data:
-                        consumer(data)
-                    off += len(data)
-                else:
-                    off += n
-        return nbytes
-
-
-def _balance_regions(regions, k):
-    """把区域按字节量贪心均衡地切成 k 份（LPT 装箱，大块优先）"""
-    slices = [[] for _ in range(k)]
-    loads = [0] * k
-    for base, size in sorted(regions, key=lambda r: r[1], reverse=True):
-        i = loads.index(min(loads))
-        slices[i].append((base, size))
-        loads[i] += size
-    return [s for s in slices if s]
-
-
-class ParallelScanner:
-    """多句柄并行内存扫描器。
-
-    并行是安全的、也是有效的：
-      * ReadProcessMemory 走内核态拷贝，ctypes 调用期间释放 GIL，真并行
-      * 同一个进程句柄可以被多个线程并发 ReadProcessMemory / VirtualQueryEx
-
-    因此起 N 个工作线程 + N 个独立句柄，把可读区域按字节量均分后同时扫，
-    单轮扫描耗时近似降到 1/N，采样频率随之提高，减少「对象存在窗口太短而采空」。
-    """
-
-    REGION_TTL = 0.5      # 可读区域列表的缓存时长（秒）
-    QUEUE_MAX = 32        # 命中块的流式队列上限，限制峰值内存
-
-    def __init__(self, pid, workers=4):
-        self.pid = pid
-        self.workers = max(1, int(workers))
-        self.pool = [ProcessScanner(pid) for _ in range(self.workers)]
-        self._regions = []
-        self._regions_at = 0.0
-        # 指标
-        self.last_bytes = 0
-        self.last_regions = 0
-        self.last_workers = 0
-        self.region_cost = 0.0
-
-    def open(self):
-        opened = []
-        for sc in self.pool:
-            if not sc.open():
-                for o in opened:
-                    o.close()
-                return False
-            opened.append(sc)
-        return True
-
-    def close(self):
-        for sc in self.pool:
-            sc.close()
-
-    def is_alive(self):
-        return self.pool[0].is_alive() if self.pool else False
-
-    def _refresh_regions(self):
-        t0 = time.time()
-        try:
-            self._regions = list(self.pool[0].iter_readable())
-        except Exception:
-            self._regions = []
-        self._regions_at = time.time()
-        self.region_cost = self._regions_at - t0
-
-    def sweep(self, consumer):
-        """一轮并行扫描；consumer(chunk_bytes) 在主线程被调用"""
-        now = time.time()
-        if not self._regions or now - self._regions_at > self.REGION_TTL:
-            self._refresh_regions()
-
-        regions = self._regions
-        self.last_regions = len(regions)
-        if not regions:
-            self.last_bytes = 0
-            self.last_workers = 0
-            return 0
-
-        slices = _balance_regions(regions, self.workers)
-        self.last_workers = len(slices)
-
-        q = queue.Queue(maxsize=self.QUEUE_MAX)
-        pending = [len(slices)]
-        lock = threading.Lock()
-        totals = [0] * len(slices)
-
-        def worker(i, sc, regs):
-            got = 0
-            try:
-                got = sc.sweep(regs, q.put)
-            except Exception:
-                pass
-            totals[i] = got
-            with lock:
-                pending[0] -= 1
-                if pending[0] == 0:
-                    q.put(None)        # 结束哨兵
-
-        threads = []
-        for i, regs in enumerate(slices):
-            t = threading.Thread(target=worker, args=(i, self.pool[i], regs),
-                                 name=f"sweep-{i}", daemon=True)
-            t.start()
-            threads.append(t)
-
-        try:
-            while True:
-                item = q.get()
-                if item is None:
-                    break
-                consumer(item)
-        except BaseException:
-            # 主线程消费出错时，别把工作线程堵死在 q.put 上
-            t0 = time.time()
-            while pending[0] > 0 and time.time() - t0 < 5:
-                try:
-                    if q.get(timeout=0.3) is None:
-                        break
-                except queue.Empty:
-                    continue
-            raise
-        finally:
-            for t in threads:
-                t.join(timeout=2.0)
-
-        self.last_bytes = sum(totals)
-        return self.last_bytes
-
+#
+# 本进程不再直接读目标进程内存（VirtualQueryEx / ReadProcessMemory、分块预筛、并行句柄
+# 与 Python 侧字段抽取都在 C++ 采集器里，见 cpp_collector/）。这里只保留驱动与判定。
 
 # ==================================================================
-# 2. 字段抽取（与原脚本逐字一致）
+# 2. 判定常量（内存解析在 C++ 采集器里，本进程只消费它的结果）
 # ==================================================================
-
-RE_OBJ_START = re.compile(rb'\{"id"\s*:\s*"resp_')
-RE_FIELDS = {
-    "response_id": re.compile(rb'"id"\s*:\s*"(resp_[0-9a-zA-Z_\-]+)"'),
-    # 注意：原始脚本这里是 rb'"model"\s*:\s*"(gpt-[0-9a-zA-Z._\-]+)"'，
-    # 硬编码了 gpt- 前缀 —— 只要响应模型不是 gpt- 开头（例如 luna-mini），
-    # 整个响应对象就会被当作"缺 model"丢弃，直接漏报。
-    # 请求侧用的是宽松的 ([^"]+)，两侧不一致本身就是 bug，这里统一放宽。
-    # 放宽不会引入误报：对象仍须以 {"id":"resp_ 开头且命中 >=2 个服务端独占字段。
-    "model":       re.compile(rb'"model"\s*:\s*"([^"\\]+)"'),
-    "effort":      re.compile(rb'"effort"\s*:\s*"([a-z_]+)"'),
-    "status":      re.compile(rb'"status"\s*:\s*"(in_progress|completed|failed|incomplete|cancelled|queued)"'),
-    "prev":        re.compile(rb'"previous_response_id"\s*:\s*"(resp_[0-9a-zA-Z_\-]+)"'),
-    "created_at":  re.compile(rb'"created_at"\s*:\s*(\d+)'),
-    "completed_at": re.compile(rb'"completed_at"\s*:\s*(\d+)'),
-    "safety_id":   re.compile(rb'"safety_identifier"\s*:\s*"([^"]+)"'),
-    "text_format": re.compile(rb'"format"\s*:\s*\{\s*"type"\s*:\s*"([a-z_]+)"'),
-}
-
-# 服务端帧独占字段（用于确认 model 来源可信）
-SERVER_MARKERS = [b'"safety_identifier"', b'"frequency_penalty"',
-                  b'"presence_penalty"', b'"object":"response"',
-                  b'"completed_at"', b'"max_output_tokens"']
-SERVER_MIN_MARKERS = 2
-
-# 客户端请求特征（出现即排除）
-CLIENT_MARKERS = [b'"type":"response.create"', b'"client_metadata"']
-
-# 客户端请求侧
-RE_REQ_ANCHOR = re.compile(rb'"type"\s*:\s*"response\.create"')
-RE_REQ_MODEL = re.compile(rb'"model"\s*:\s*"([^"]+)"')
-RE_REQ_PREV = re.compile(rb'"previous_response_id"\s*:\s*"(resp_[0-9a-zA-Z_\-]+)"')
 
 SUBTASK_EFFORT = "low"
 
@@ -434,41 +155,6 @@ STATUS_RANK = {"queued": 1, "in_progress": 2, "failed": 3, "incomplete": 3,
 
 VERDICT_TAG = {"normal": "正常", "subtask": "子任务",
                "downgrade": "降级", "incomplete": "不完整"}
-
-
-def extract_requests(chunk):
-    """抽出客户端请求侧映射 {previous_response_id: 请求模型}"""
-    out = {}
-    for m in RE_REQ_ANCHOR.finditer(chunk):
-        blk = chunk[m.start():m.start() + 512]
-        mm = RE_REQ_MODEL.search(blk)
-        if not mm:
-            continue
-        pp = RE_REQ_PREV.search(blk)
-        key = pp.group(1).decode() if pp else None
-        out[key] = mm.group(1).decode("utf-8", "replace")
-    return out
-
-
-def extract_responses(chunk):
-    """从内存块里抽出所有「服务端下发」的 response 对象关键字段"""
-    out = []
-    for m in RE_OBJ_START.finditer(chunk):
-        blk = chunk[m.start():m.start() + 4096]
-        n_marks = sum(1 for mk in SERVER_MARKERS if mk in blk)
-        if n_marks < SERVER_MIN_MARKERS:
-            continue
-        if any(mk in blk for mk in CLIENT_MARKERS):
-            continue
-        f = {}
-        for key, rx in RE_FIELDS.items():
-            mm = rx.search(blk)
-            if mm:
-                f[key] = mm.group(1).decode("utf-8", "replace")
-        if f.get("response_id") and f.get("model"):
-            f["_marks"] = n_marks
-            out.append(f)
-    return out
 
 
 # ==================================================================
@@ -541,14 +227,15 @@ EVIDENCE_BACKFILL_LIMIT = 2000   # 每轮证据回补最多处理多少条还没
 
 
 class Monitor:
-    def __init__(self, expect, interval, logfile=None, workers=4, backend="python", db_path=":memory:",
+    def __init__(self, expect, interval, logfile=None, workers=4, db_path=":memory:",
                  evidence=False):
         self.lock = threading.RLock()
         self.broker = Broker()
         self.expect = expect
         self.min_interval_ms = max(0.0, float(interval)) * 1000
         self.workers = max(1, int(workers))
-        self.backend = backend
+        # 采集后端只有一个（C++ 常驻辅助进程）；这里保留字段是为了写库时标注来源。
+        self.backend = "cpp"
         self.logfile = logfile
         self.store = HistoryStore(db_path)
         self._pending_archive = None
@@ -994,11 +681,8 @@ class Monitor:
                 self.log("info", "未发现运行中的 codex.exe，持续等待中…")
             return False
 
-        if self.backend == "cpp":
-            from native_scanner import NativeScanner
-            sc = NativeScanner(pid, workers)
-        else:
-            sc = ParallelScanner(pid, workers)
+        from native_scanner import NativeScanner
+        sc = NativeScanner(pid, workers)
         if not sc.open():
             self.status = "denied"
             self._probe_after = now + DENIED_BACKOFF
@@ -1011,7 +695,7 @@ class Monitor:
         self.status = "running"
         cmd = next((c["cmd"] for c in cands if c["pid"] == pid), "")
         self.log("info", f"已连接 codex.exe  pid={pid}  "
-                         f"后端={self.backend} · 扫描线程={self.workers}  "
+                         f"扫描器=C++ · 扫描线程={self.workers}  "
                          f"{'(app-server)' if 'app-server' in cmd else ''}")
         return True
 
@@ -1039,20 +723,12 @@ class Monitor:
         native_metrics = {}
         hits = [0]
 
-        def consume(data):
-            hits[0] += 1
-            resps.extend(extract_responses(data))
-            reqs.extend({"prev": prev, "model": model} for prev, model in extract_requests(data).items())
-
         try:
-            if self.backend == "cpp":
-                batch = self.scanner.sweep_records()
-                resps, reqs = batch["responses"], batch["requests"]
-                hits[0] = batch["hit_blocks"]
-                nbytes = batch["bytes"]
-                native_metrics = dict(self.scanner.metrics)
-            else:
-                nbytes = self.scanner.sweep(consume)
+            batch = self.scanner.sweep_records()
+            resps, reqs = batch["responses"], batch["requests"]
+            hits[0] = batch["hit_blocks"]
+            nbytes = batch["bytes"]
+            native_metrics = dict(self.scanner.metrics)
         except Exception as e:
             self.log("error", f"扫描异常: {e}")
             try:
@@ -1644,14 +1320,13 @@ def main():
         return 2
     ap = argparse.ArgumentParser(
         description="Codex 模型降级监控 · 常驻采集器 + 本地 HTTP 视图服务（静默，无控制台输出）")
-    ap.add_argument("--db", default=DEFAULT_DB, help="SQLite 历史库路径；两种后端默认共用 data/monitor.sqlite")
-    ap.add_argument("--backend", choices=("python", "cpp"), default="python")
+    ap.add_argument("--db", default=DEFAULT_DB, help="SQLite 历史库路径，默认 data/monitor.sqlite")
     ap.add_argument("--host", default=config["host"], help="HTTP 监听地址，0.0.0.0 支持局域网访问")
-    ap.add_argument("--port", type=int, default=None)
+    ap.add_argument("--port", type=int, default=None, help="HTTP 监听端口，默认读取 config.json 的 cpp_port")
     ap.add_argument("--expect", default=config["expect"],
                     help="预期模型（默认读取配置，留空不主动标记子任务）")
     ap.add_argument("--workers", type=int, default=config["workers"],
-                    help="并行扫描线程数（默认 4，每个线程一个独立进程句柄）")
+                    help="C++ 采集器并行扫描线程数（默认 4，每个线程一个独立进程句柄）")
     ap.add_argument("--min-interval-ms", type=float, default=None, help="最小采样间隔，单位 ms（默认读取 config.json）")
     ap.add_argument("--idle", type=float, default=config["min_interval_ms"] / 1000,
                     help="最小采样间隔的秒单位别名，0 = 连续扫描")
@@ -1662,7 +1337,13 @@ def main():
         help="日志文件（控制台不输出，日志只落文件 + 前端）")
     ap.add_argument("--no-open", action="store_true", help="不自动打开浏览器")
     args = ap.parse_args()
-    if args.port is None: args.port = config["cpp_port" if args.backend == "cpp" else "port"]
+    if args.port is None:
+        args.port = config["cpp_port"]
+    else:
+        try:
+            args.port = validate_port(args.port)
+        except ValueError as exc:
+            ap.error(str(exc))
 
     idle = args.idle if args.interval is None else args.interval
     if args.min_interval_ms is not None:
@@ -1670,18 +1351,17 @@ def main():
     if not math.isfinite(idle) or not 0 <= idle <= 60:
         ap.error("最小采样间隔须为 0～60000ms")
     try:
-        effective = validate_config({"expect": args.expect, "workers": args.workers, "min_interval_ms": idle * 1000,
-                                     "host": args.host, "port": args.port})
+        effective = validate_config({"expect": args.expect, "workers": args.workers,
+                                     "min_interval_ms": idle * 1000, "host": args.host})
     except ValueError as exc:
         ap.error(str(exc))
     workers = effective["workers"]
 
     # ---- 采集器：先于 HTTP 服务构造并启动，与 HTTP 完全解耦 ----
-    if args.backend == "cpp":
-        from native_scanner import EXECUTABLE
-        if not os.path.isfile(EXECUTABLE):
-            return 4
-    monitor = Monitor(effective["expect"], idle, args.log, workers=workers, backend=args.backend, db_path=args.db,
+    from native_scanner import EXECUTABLE
+    if not os.path.isfile(EXECUTABLE):
+        return 4
+    monitor = Monitor(effective["expect"], idle, args.log, workers=workers, db_path=args.db,
                       evidence=True)
     Handler.monitor = monitor
 

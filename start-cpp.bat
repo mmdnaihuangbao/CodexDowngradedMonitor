@@ -1,2 +1,2 @@
 @echo off
-call "%~dp0start.bat" --backend cpp %*
+call "%~dp0start.bat" %*
