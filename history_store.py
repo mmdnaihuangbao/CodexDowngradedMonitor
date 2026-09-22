@@ -74,6 +74,7 @@ class HistoryStore:
                 key_kind TEXT NOT NULL, key_value TEXT NOT NULL, model TEXT NOT NULL,
                 effort TEXT, turn_id TEXT, thread_id TEXT, source TEXT NOT NULL,
                 first_seen REAL NOT NULL, last_seen REAL NOT NULL,
+                observed_at REAL,
                 rejected INTEGER NOT NULL DEFAULT 0,
                 PRIMARY KEY (key_kind, key_value)
             );
@@ -86,6 +87,10 @@ class HistoryStore:
         self.db.execute('INSERT OR IGNORE INTO data_version(id,version) VALUES (1,?)', (DATA_VERSION,))
         # 0.2 只扩展证据 JSON；0.3 只新增旁路证据索引表。两者都不重写历史响应与判定。
         self.db.execute("UPDATE data_version SET version=? WHERE id=1 AND version IN ('0.1','0.2')", (DATA_VERSION,))
+        # observed_at 是后加的列：已有库补一列，不重建表、不动已有行。
+        columns = {row[1] for row in self.db.execute('PRAGMA table_info(request_model_index)')}
+        if 'observed_at' not in columns:
+            self.db.execute('ALTER TABLE request_model_index ADD COLUMN observed_at REAL')
         if self.db.execute('PRAGMA user_version').fetchone()[0] == 0:
             self.db.execute('PRAGMA user_version=1')
         self.data_version = self.db.execute('SELECT version FROM data_version WHERE id=1').fetchone()[0]
@@ -233,10 +238,13 @@ class HistoryStore:
                 row = self.db.execute('SELECT model,rejected FROM request_model_index '
                                       'WHERE key_kind=? AND key_value=?', (kind, key)).fetchone()
                 if row is None:
-                    self.db.execute('INSERT INTO request_model_index VALUES (?,?,?,?,?,?,?,?,?,?)',
+                    self.db.execute('INSERT INTO request_model_index'
+                                    '(key_kind,key_value,model,effort,turn_id,thread_id,source,'
+                                    ' first_seen,last_seen,observed_at,rejected) '
+                                    'VALUES (?,?,?,?,?,?,?,?,?,?,?)',
                                     (kind, key, model, entry.get('effort'), entry.get('turn_id'),
                                      entry.get('thread_id'), entry['source'], now, now,
-                                     1 if incoming else 0))
+                                     entry.get('observed_at'), 1 if incoming else 0))
                     if incoming:
                         conflicts.append({'key_kind': kind, 'key_value': key, 'kept': model,
                                           'conflict': entry.get('conflict_model'),
@@ -251,10 +259,11 @@ class HistoryStore:
                                           'source': entry['source']})
                 else:
                     self.db.execute('UPDATE request_model_index SET last_seen=?, effort=COALESCE(?,effort), '
-                                    'turn_id=COALESCE(?,turn_id), thread_id=COALESCE(?,thread_id) '
+                                    'turn_id=COALESCE(?,turn_id), thread_id=COALESCE(?,thread_id), '
+                                    'observed_at=COALESCE(?,observed_at) '
                                     'WHERE key_kind=? AND key_value=?',
                                     (now, entry.get('effort'), entry.get('turn_id'),
-                                     entry.get('thread_id'), kind, key))
+                                     entry.get('thread_id'), entry.get('observed_at'), kind, key))
         return conflicts
 
     def index_drop_kinds(self, kinds):
@@ -268,7 +277,8 @@ class HistoryStore:
 
     def index_load(self, limit=200000):
         with self.lock:
-            rows = self.db.execute('SELECT key_kind,key_value,model,effort,turn_id,thread_id,source,rejected '
+            rows = self.db.execute('SELECT key_kind,key_value,model,effort,turn_id,thread_id,source,'
+                                   'observed_at,rejected '
                                    'FROM request_model_index ORDER BY last_seen DESC LIMIT ?', (limit,)).fetchall()
         return [dict(row) for row in rows]
 
@@ -303,6 +313,14 @@ class HistoryStore:
         with self.lock:
             rows = self.db.execute('SELECT payload FROM responses WHERE req_model IS NULL '
                                    'ORDER BY last_seen DESC LIMIT ?', (limit,)).fetchall()
+        return [json.loads(row[0]) for row in rows]
+
+    def responses_unfinished(self, limit=1000):
+        """仍停在 queued / in_progress 的记录：用来对账"其实已经结束"的响应。"""
+        with self.lock:
+            rows = self.db.execute("SELECT payload FROM responses "
+                                   "WHERE status IN ('queued','in_progress') "
+                                   "ORDER BY last_seen DESC LIMIT ?", (limit,)).fetchall()
         return [json.loads(row[0]) for row in rows]
 
     def totals(self):

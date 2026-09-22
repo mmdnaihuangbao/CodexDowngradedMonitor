@@ -14,6 +14,7 @@
 * 前缀是对服务端 ID 生成规则的逆向观察，不是官方契约：唯一性由 store.index_save 熔断兜底，
   同一前缀出现第二个模型即整键作废，此时宁可没有证据也不猜。
 """
+import datetime
 import glob
 import json
 import os
@@ -28,8 +29,9 @@ ROLLOUT_GLOBS = ("sessions/*/*/*/rollout-*.jsonl", "archived_sessions/*.jsonl")
 
 # 与面板 SSE 心跳同频；轮询间隔是服务侧新增的等待策略，2 秒已与用户确认。
 POLL_SECONDS = 2.0
-# 索引格式版本：格式变了就得清掉旧键并整库重扫一次（见 collector.Monitor 里的迁移）。
-INDEX_FORMAT = 2
+# 索引格式版本：格式变了就得清掉旧键并重扫相应的源（见 collector.Monitor 里的迁移）。
+# 3 起请求模型条目带 observed_at：会话记账行的写入时刻，用来补"完成时间"。
+INDEX_FORMAT = 3
 # 响应 ID 与它自己产出的 item ID 共享一段"请求前缀"。实测该前缀长度不固定（22～26 位都有），
 # 而且是递增计数器：同一回合内相邻请求常常只差最后 1～2 个 hex。因此不能按固定长度截断取键
 # （那等于拿邻居请求的模型），改为保存 item ID 前 26 位，查询时在同一线程桶内比"共享前缀最长"。
@@ -192,7 +194,8 @@ class RolloutIndex:
             prev = self.files.get(path) or {}
             offset = int(prev.get("offset", 0))
             turns = dict(prev.get("turns") or {})
-            pending = [list(item) for item in (prev.get("pending") or [])]
+            # 旧状态的 pending 是 3 元组（没有 observed_at），补齐成 4 位再续读。
+            pending = [(list(item) + [None] * 4)[:4] for item in (prev.get("pending") or [])]
             if offset > size:
                 # 文件被重写或迁移过：从头重扫，避免偏移落在别的会话内容中间。
                 offset, turns, pending = 0, {}, []
@@ -218,6 +221,16 @@ class RolloutIndex:
                                                "new": len(entries)}
 
 
+def _parse_iso_epoch(text):
+    """把 rollout 行里的 ISO 时间戳转成 unix 秒；解析不出来就返回 None。"""
+    if not text:
+        return None
+    try:
+        return datetime.datetime.fromisoformat(text.replace("Z", "+00:00")).timestamp()
+    except (AttributeError, TypeError, ValueError):
+        return None
+
+
 def _read_rollout(path, offset, turns, pending):
     """从 offset 续读完整行；半行不消费（文件正被 codex 追加），留到下一轮。"""
     entries = []
@@ -241,25 +254,29 @@ def _read_rollout(path, offset, turns, pending):
                 elif '"session_meta"' in line:
                     session_id = (json.loads(line).get("payload") or {}).get("session_id")
                 elif '"response_id"' in line:
-                    payload = (json.loads(line).get("payload") or {})
+                    obj = json.loads(line)
+                    payload = obj.get("payload") or {}
                     response_id = payload.get("response_id")
                     if response_id:
+                        # 记账行是在请求结束时写的：这一行的 timestamp 就是"完成时刻"的观测值。
                         pending.append([response_id, payload.get("turn_id"),
-                                        payload.get("thread_id") or session_id])
+                                        payload.get("thread_id") or session_id,
+                                        _parse_iso_epoch(obj.get("timestamp"))])
             except ValueError:
                 # 单行 JSON 坏掉只跳过这一行；rollout 允许被并发追加。
                 continue
 
     still_pending = []
-    for response_id, turn_id, thread_id in pending:
+    for response_id, turn_id, thread_id, observed_at in pending:
         turn = turns.get(turn_id)
         if turn and turn.get("model"):
             entries.append({"key_kind": "resp_id", "key_value": response_id,
                             "model": turn["model"], "effort": turn.get("effort"),
                             "turn_id": turn_id, "thread_id": thread_id,
+                            "observed_at": observed_at,
                             "source": RolloutIndex.name})
         else:
-            still_pending.append([response_id, turn_id, thread_id])
+            still_pending.append([response_id, turn_id, thread_id, observed_at])
     return still_pending, entries, offset
 
 

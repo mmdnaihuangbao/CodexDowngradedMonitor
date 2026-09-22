@@ -522,7 +522,7 @@ async function doDiagnose(){
 日志库     : ${esc(ev.log_db || '—')}   游标 ${esc(ev.log_last_id ?? 0)}   已读 ${esc(ev.log_rows_indexed ?? 0)} 行   会话文件 ${esc(ev.rollout_files ?? 0)} 个
 可配对键   : 响应号 ${esc(evKeys.resp_id ?? 0)} ｜ item 前缀 ${esc(evKeys.item ?? 0)} ｜ 冲突作废 ${esc(ev.index_rejected ?? 0)}
 来源分布   : 会话记录 ${esc(evSrc.rollout_token_usage ?? 0)} ｜ codex 日志 ${esc(evSrc.codex_log_prefix ?? 0)}
-回补历史   : ${esc(ev.backfilled ?? 0)} 条   本进程遇到键冲突 ${esc(ev.conflicts ?? 0)} 条${ev.last_error ? '\n最近错误   : ' + esc(ev.last_error) : ''}</pre>
+回补历史   : ${esc(ev.backfilled ?? 0)} 条   补齐完成态 ${esc(ev.settled ?? 0)} 条   本进程遇到键冲突 ${esc(ev.conflicts ?? 0)} 条${ev.last_error ? '\n最近错误   : ' + esc(ev.last_error) : ''}</pre>
     <p>前缀是"响应 ID 与它产出的 output item ID 共享 23～25 位十六进制"这一观察结果，
     不是官方契约：同一前缀出现第二个模型时整个键会被作废，宁可没有证据也不猜。</p>` : '';
 

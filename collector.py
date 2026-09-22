@@ -224,6 +224,7 @@ PROBE_BACKOFF = 2.0       # 没找到进程时，多久才重新枚举一次
 DENIED_BACKOFF = 15.0     # 打开进程失败时，多久才重试
 NO_PROCESS_WAIT = 0.5     # 没有可扫进程时，采集线程每轮歇多久
 EVIDENCE_BACKFILL_LIMIT = 2000   # 每轮证据回补最多处理多少条还没有请求模型的记录
+EVIDENCE_SETTLE_LIMIT = 1000     # 每轮最多对账多少条仍停在 queued/in_progress 的记录
 
 
 class Monitor:
@@ -251,6 +252,7 @@ class Monitor:
         self._index_stats = {"keys": {}, "rejected": 0, "sources": {}}
         self._evidence_backfilled = 0
         self._evidence_conflicts = 0
+        self._evidence_settled = 0
         self.rid_kind = {}
         self.count = {"normal": 0, "subtask": 0,
                       "downgrade": 0, "incomplete": 0}
@@ -390,19 +392,28 @@ class Monitor:
         return models.pop(), "matched_response_id_prefix"
 
     def _migrate_index_format(self):
-        """索引格式升级：旧格式的键清掉并整库重扫一次日志库。
+        """索引格式升级：按需要清旧键、重扫对应的源。
 
-        格式 2 起，item 条目保存完整 item ID 前缀（查询时比共享长度），不再保存固定长度截断键；
-        沿用旧键等于把「邻居请求的模型」当自己的，所以必须清掉重扫（空游标 = 从库头开始）。
+        格式 2：item 条目保存完整 item ID 前缀（查询时比共享长度），不再保存固定长度截断键；
+                沿用旧键等于把「邻居请求的模型」当自己的 → 清掉 prefix 键并重扫日志库。
+        格式 3：请求模型条目带 observed_at（会话记账行的写入时刻，用来补完成时间）；
+                旧条目没有这个值 → 重置 rollout 游标，让会话记录重扫一次补上。
         """
         stored = int(self.store.state_get("index_format", 1) or 1)
         if stored == INDEX_FORMAT:
             return
         dropped = self.store.index_drop_kinds(("prefix",))
-        self.store.state_set("codex_log_cursor", {})
+        rescan = []
+        if stored < 2:
+            self.store.state_set("codex_log_cursor", {})
+            rescan.append("日志库")
+        if stored < 3:
+            # 只重置 rollout 游标：日志库那边的 item 键不需要 observed_at，不必重扫。
+            self.store.state_set("rollout_files", {})
+            rescan.append("会话记录")
         self.store.state_set("index_format", INDEX_FORMAT)
-        self.log("info", f"证据索引升级到格式 {INDEX_FORMAT}：清理旧键 {dropped} 条，"
-                         f"日志库将重扫一次以重建 item 前缀索引")
+        self.log("info", f"证据索引升级到格式 {INDEX_FORMAT}：清理旧键 {dropped} 条"
+                         + (f"，重扫 {'、'.join(rescan)}" if rescan else ""))
 
     def verdict_for(self, rec, req_model):
         model = rec.get("model")
@@ -602,6 +613,7 @@ class Monitor:
             "index_rejected": self._index_stats.get("rejected", 0),
             "index_sources": dict(self._index_stats.get("sources") or {}),
             "backfilled": self._evidence_backfilled,
+            "settled": self._evidence_settled,
             "conflicts": self._evidence_conflicts,
         }
         if self.evidence is not None:
@@ -959,6 +971,53 @@ class Monitor:
                                  "alerts": alerts, "stats": self.stats()})
         return len(changed)
 
+    def _settle_finished_responses(self):
+        """把"其实已经结束"的响应从 queued/in_progress 补成 completed。
+
+        响应对象在内存里只存活到请求结束，完成那一瞬经常采不到，卡片就永远停在「未完成」。
+        这里用两条只读旁路证据对账，都是单向的：命中即说明请求已经结束，没命中只代表不知道
+        （实测已完成的记录里也只有 73% / 83% 带这两种证据，所以不能反推"没完成"）。
+
+          * 会话记账：rollout 的 token_usage_record 是请求收尾时写的，顺手取它的写入时刻当完成时间；
+          * 后续请求引用：库里另一条响应把它当 previous_response_id，说明它的输出已被采用。
+
+        第二种只有"已结束"这个事实，没有时间，所以不编造 completed_at。
+        """
+        unfinished = self.store.responses_unfinished(EVIDENCE_SETTLE_LIMIT)
+        if not unfinished:
+            return 0
+        rids = [rec["response_id"] for rec in unfinished]
+        chained = self.store.for_previous(rids)
+        now = time.time()
+        upserts, changed = [], []
+        with self.lock:
+            for rec in unfinished:
+                rid = rec["response_id"]
+                entry = self.index_rid.get(rid)
+                if entry is None and not any(row.get("prev") == rid for row in chained.values()):
+                    continue
+                observed = entry.get("observed_at") if entry else None
+                rec["status"] = "completed"
+                if observed:
+                    rec["completed_at"] = str(int(observed))
+                rec["_last_seen"] = now
+                rec["_updates"] = rec.get("_updates", 0) + 1
+                changed.append(rec)
+                upserts.append(self.ser(rec))
+            if changed:
+                self.store.save_batch(changed, backend=self.backend)
+                for rec in changed:
+                    cached = self.seen.get(rec["response_id"])
+                    if cached is not None:
+                        cached.update({k: rec.get(k) for k in ("status", "completed_at",
+                                                               "_last_seen", "_updates")})
+                self._evidence_settled += len(changed)
+        if upserts:
+            self.log("info", f"已结束的响应补齐完成态 {len(changed)} 条")
+            self.broker.publish({"type": "patch", "upserts": upserts,
+                                 "alerts": [], "stats": self.stats()})
+        return len(changed)
+
     def start_evidence(self):
         """启动旁路证据线程（与内存采集线程相互独立）。"""
         if self.evidence is None:
@@ -975,6 +1034,11 @@ class Monitor:
             except Exception as exc:
                 # 日志轮转、文件被独占都可能是暂时的，单轮失败不能让证据线程退出。
                 self.log("error", f"证据索引轮询异常: {exc}")
+            try:
+                # 与"有没有新证据"无关：完成态可能靠库里已有的 prev 链判定，必须每轮对账。
+                self._settle_finished_responses()
+            except Exception as exc:
+                self.log("error", f"完成态对账异常: {exc}")
             self._stop.wait(interval)
 
     # ---------------- 采集线程（常驻，与 HTTP 服务解耦） ----------------

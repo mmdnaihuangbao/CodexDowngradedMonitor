@@ -3,6 +3,6 @@
   "host": "localhost",
   "cpp_port": 48778,
   "expect": "",
-  "min_interval_ms": 25,
-  "workers": 4
+  "min_interval_ms": 250,
+  "workers": 1
 }
