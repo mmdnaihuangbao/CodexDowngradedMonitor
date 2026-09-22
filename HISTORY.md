@@ -30,9 +30,42 @@ python start.py --backend cpp --db D:\MonitorData\history.sqlite
 |---|---|
 | `responses` | 每个响应的最新状态、时间索引和判定 |
 | `response_events` | 捕获到的状态/证据变化历史 |
-| `request_evidence` | 去重后的请求模型与前序响应证据 |
+| `request_evidence` | 去重后的请求模型与前序响应证据（内存来源） |
+| `request_model_index` | 旁路证据索引：`resp_id` / `prefix` 两类键 → 请求模型、effort、turn、来源；同一个键撞到第二个模型时置 `rejected` 并停止参与配对 |
+| `evidence_state` | 旁路索引的增量游标（日志库文件名 + 行号；rollout 各文件的字节偏移与已见回合） |
 | `collector_logs` | 采集运行日志 |
-| `data_version` | 单行数据版本声明，当前文本值 `0.2`；启动时兼容升级 `0.1`，不等同于整数 `PRAGMA user_version` |
+| `data_version` | 单行数据版本声明，当前文本值 `0.3`；启动时兼容升级 `0.1`/`0.2`，只新增表与版本声明、不重写历史分类，不等同于整数 `PRAGMA user_version` |
+
+`request_model_index` 与 `evidence_state` 是 2026-09-22 引入的只读旁路证据索引（codex 自有日志 + 会话 rollout）；
+它们必须落库，因为日志库会轮转，索引结果不能只留在内存里。
+
+## 请求模型证据来源与延迟重判
+
+`responses.req_model` 现在可能来自三条通道，来源存在 payload 的 `_evidence_source`，接口输出为 `evidence_source`，卡片显示成「证据来源」：
+
+| `evidence_source` | 含义 |
+|---|---|
+| `memory_websocket` | 内存里 `响应.prev == 请求.previous_response_id` 配对（原有通道） |
+| `codex_log_prefix` | codex 自有日志的响应号前缀索引（只读旁路） |
+| `rollout_token_usage` | 会话 rollout 的 `token_usage_record.response_id`（只读旁路） |
+
+配对状态（接口 `pairing_status`）在原有 `matched_previous_response_id` / `request_not_captured` /
+`no_previous_response_id` / `ambiguous_previous_response_id` 之外新增三个：
+`matched_response_id`（按响应号精确命中 rollout 记录）、`matched_response_id_prefix`
+（与某个 output item 共享最长前缀而认领）、`ambiguous_response_id_prefix`
+（共享最长的若干条目给出不同模型，因此不给请求模型）、`rejected_response_id`
+（该响应号键曾撞到两个模型，已整键作废）。
+
+索引键分两类：`resp_id`（rollout 的响应号）与 `item`（output item ID 前 26 位）。
+item 键**不做固定长度截断**：那段请求前缀是递增计数器，同回合相邻请求常常只差最后 1–2 个 hex，
+按固定长度取键会取到邻居请求的模型。查询时在同线程桶内比共享前缀长度、取最长的一条，
+并列且模型不一致就不给答案。格式升级（`evidence_state.index_format`）会清掉旧键并重扫一次日志库。
+
+**延迟重判**：证据晚到时，证据线程会把「还没有请求模型」的记录重新判一次（每轮上限 2000 条），
+判出降级照常告警并写入 `response_events`；已经有请求模型的记录不在证据线程里改写。
+旧记录缺少 `_expect` 时，只有两种情况允许被硬证据改写：原判 `incomplete` 且请求模型 == 响应模型 → `normal`；
+请求模型 ≠ 响应模型 → `downgrade`。`normal`/`subtask` 的区分依赖采集时的预期模型，
+历史记录缺这个字段时保持原判，不拿今天的配置重新解释。
 
 新记录在 payload 中保存 `_expect`（首次采集时的预期模型，允许空字符串），接口输出为 `expect`，非空时卡片显示“采集时预期”。修改配置不会重新分类历史；后续补齐状态或请求证据仍使用该记录自己的预期模型。旧记录缺少 `_expect` 时保留原分类，不用当前配置补写未知的历史设置。版本表为增量创建，不重写已有响应和事件。
 

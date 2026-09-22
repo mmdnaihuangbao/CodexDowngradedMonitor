@@ -80,6 +80,8 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import urlparse, parse_qs
 from history_store import HistoryStore, DEFAULT_DB, validation_reason
 from config_store import load_config, save_config, validate_config, browser_host, CONFIG_VERSION
+from evidence_index import (EvidenceIndex, INDEX_FORMAT, ITEM_BUCKET_LEN, MIN_ITEM_SHARE,
+                            common_prefix_length)
 
 # ==================================================================
 # 0. 静默化 —— 本进程绝不向控制台写任何东西
@@ -535,10 +537,12 @@ MAX_ALERTS = 200
 PROBE_BACKOFF = 2.0       # 没找到进程时，多久才重新枚举一次
 DENIED_BACKOFF = 15.0     # 打开进程失败时，多久才重试
 NO_PROCESS_WAIT = 0.5     # 没有可扫进程时，采集线程每轮歇多久
+EVIDENCE_BACKFILL_LIMIT = 2000   # 每轮证据回补最多处理多少条还没有请求模型的记录
 
 
 class Monitor:
-    def __init__(self, expect, interval, logfile=None, workers=4, backend="python", db_path=":memory:"):
+    def __init__(self, expect, interval, logfile=None, workers=4, backend="python", db_path=":memory:",
+                 evidence=False):
         self.lock = threading.RLock()
         self.broker = Broker()
         self.expect = expect
@@ -552,6 +556,14 @@ class Monitor:
         self.scanner = None
         self.seen = {}
         self.req_models = {}
+        # 旁路证据索引（codex 日志前缀 / rollout 响应号）：只读外部文件，不进内存扫描器。
+        self.evidence = None
+        self.index_rid = {}
+        self.index_items = {}     # 线程桶：ID 前 ITEM_BUCKET_LEN 位 -> [item 条目]
+        self._index_item_count = 0
+        self._index_stats = {"keys": {}, "rejected": 0, "sources": {}}
+        self._evidence_backfilled = 0
+        self._evidence_conflicts = 0
         self.rid_kind = {}
         self.count = {"normal": 0, "subtask": 0,
                       "downgrade": 0, "incomplete": 0}
@@ -586,6 +598,13 @@ class Monitor:
         self.count = dict(self.store.totals()["counts"])
         self.logs.extend(self.store.recent_logs())
 
+        if evidence:
+            self._migrate_index_format()
+            self.evidence = EvidenceIndex(self.store)
+            self._index_stats = self.store.index_stats()
+            for entry in self.store.index_load():
+                self._remember_index_entry(entry)
+
     # ---------------- 日志（不落控制台，只落内存 + 文件） ----------------
     def log(self, level, msg):
         line = {"ts": now_str(), "level": level, "msg": msg}
@@ -618,43 +637,121 @@ class Monitor:
     #     incomplete 其余情况 → **不完整**，标黄、不报警
     #                （原先这里直接判 downgrade，只要请求侧没采到就报红，
     #                  属于把「采集缺口」误报成「模型降级」）
-    def classify(self, rec):
-        model = rec.get("model")
-        effort = rec.get("effort")
+    #
+    #   请求模型按证据强度分层解析（见 resolve_request_model）：
+    #     L1 内存 previous_response_id 配对、L1 rollout 响应号、L2 codex 日志响应号前缀。
+    #   三层都是"请求侧模型"这一硬证据，来源不同但语义相同；来源写进 _evidence_source，
+    #   便于区分一张卡片的请求模型究竟是从哪里来的。
+    def resolve_request_model(self, rec):
+        """返回 (请求模型, 证据来源, 配对状态)。模型为 None 表示证据不足。
+
+        前缀通道是对服务端 ID 生成规则的逆向观察（响应 ID 与它产出的 output item ID
+        共享 23～25 位十六进制前缀）：同一前缀出现第二个模型时索引层会把整个键作废，
+        这里就会落到"无证据"，而不是挑一个模型出来。
+        """
         prev = rec.get("prev")
         if prev and prev not in self.req_models:
             found, model_evidence = self.store.lookup_request(prev)
             if found: self.req_models[prev] = model_evidence
-        req_model = self.req_models.get(prev) if prev else None
+        if prev and prev in self.req_models:
+            model = self.req_models[prev]
+            if model is None:
+                return None, None, "ambiguous_previous_response_id"
+            return model, "memory_websocket", "matched_previous_response_id"
 
+        rid = rec.get("response_id") or ""
+        entry = self.index_rid.get(rid)
+        if entry is not None:
+            if entry.get("rejected"):
+                return None, None, "rejected_response_id"
+            return entry["model"], entry["source"], "matched_response_id"
+        if rid.startswith("resp_") and len(rid) >= 5 + MIN_ITEM_SHARE:
+            model, status = self._lookup_item_prefix(rid[5:])
+            if model is not None:
+                return model, "codex_log_prefix", status
+            if status is not None:
+                return None, None, status
+
+        if prev:
+            return None, None, "request_not_captured"
+        return None, None, "no_previous_response_id"
+
+    def _lookup_item_prefix(self, body):
+        """按「与某个 output item 共享最长前缀」认领请求模型。
+
+        响应 ID 与它自己产出 item ID 共享的那段请求前缀长度不固定（22～26 位都出现过），
+        而且它是递增计数器：同一回合内相邻请求常常只差最后 1～2 个 hex。按固定长度截断取键
+        会取到相邻请求的模型，所以这里在同线程桶内比共享长度，取最长的那个；
+        并列却给出不同模型时不给答案（宁缺勿错）。
+        """
+        bucket = self.index_items.get(body[:ITEM_BUCKET_LEN])
+        if not bucket:
+            return None, None
+        best, models = 0, set()
+        for item in bucket:
+            if item.get("rejected"):
+                continue
+            length = common_prefix_length(body, item["key_value"])
+            if length > best:
+                best, models = length, {item["model"]}
+            elif length == best:
+                models.add(item["model"])
+        if best < MIN_ITEM_SHARE:
+            return None, None
+        if len(models) != 1:
+            return None, "ambiguous_response_id_prefix"
+        return models.pop(), "matched_response_id_prefix"
+
+    def _migrate_index_format(self):
+        """索引格式升级：旧格式的键清掉并整库重扫一次日志库。
+
+        格式 2 起，item 条目保存完整 item ID 前缀（查询时比共享长度），不再保存固定长度截断键；
+        沿用旧键等于把「邻居请求的模型」当自己的，所以必须清掉重扫（空游标 = 从库头开始）。
+        """
+        stored = int(self.store.state_get("index_format", 1) or 1)
+        if stored == INDEX_FORMAT:
+            return
+        dropped = self.store.index_drop_kinds(("prefix",))
+        self.store.state_set("codex_log_cursor", {})
+        self.store.state_set("index_format", INDEX_FORMAT)
+        self.log("info", f"证据索引升级到格式 {INDEX_FORMAT}：清理旧键 {dropped} 条，"
+                         f"日志库将重扫一次以重建 item 前缀索引")
+
+    def verdict_for(self, rec, req_model):
+        model = rec.get("model")
+        effort = rec.get("effort")
         # 旧库没有记录采集时的目标模型，不能用今天的配置猜测并重写历史分类。
-        if "_expect" not in rec and "_verdict" in rec:
-            return rec["_verdict"], req_model
-        expect = rec.get("_expect", self.expect)
+        legacy = "_expect" not in rec and "_verdict" in rec
 
         if req_model is not None:
             if req_model != model:
-                return "downgrade", req_model
+                # 请求模型与响应模型不一致是硬证据，与记录里有没有 _expect 无关。
+                return "downgrade"
+            if legacy:
+                # 只有"证据不足"可以被硬证据撤销；normal/subtask 的区分依赖采集时的
+                # 预期模型，历史记录缺这个字段时保持原判定，不拿今天的配置重新解释。
+                return "normal" if rec["_verdict"] == "incomplete" else rec["_verdict"]
+            expect = rec.get("_expect", self.expect)
             if not expect or req_model == expect:
-                return "normal", req_model
-            return "subtask", req_model
+                return "normal"
+            return "subtask"
 
+        if legacy:
+            return rec["_verdict"]
         # 配对失败：回退启发式
+        expect = rec.get("_expect", self.expect)
         if expect and model == expect:
-            return "normal", None
+            return "normal"
         if expect and effort == SUBTASK_EFFORT:
-            return "subtask", None
-        return "incomplete", None
+            return "subtask"
+        return "incomplete"
+
+    def classify(self, rec):
+        req_model = self.resolve_request_model(rec)[0]
+        return self.verdict_for(rec, req_model), req_model
 
     def pairing_status(self, rec):
-        prev = rec.get("prev")
-        if not prev:
-            return "no_previous_response_id"
-        if prev not in self.req_models:
-            return "request_not_captured"
-        if self.req_models[prev] is None:
-            return "ambiguous_previous_response_id"
-        return "matched_previous_response_id"
+        return self.resolve_request_model(rec)[2]
 
     # ---------------- 去重 ----------------
     def handle(self, rec, expect=None):
@@ -704,11 +801,13 @@ class Monitor:
     # ---------------- 判定 + 计数 + 告警 ----------------
     def apply_verdict(self, rec, kind):
         rid = rec["response_id"]
-        verdict, req_model = self.classify(rec)
+        req_model, source, pairing = self.resolve_request_model(rec)
+        verdict = self.verdict_for(rec, req_model)
         rec["_suspect_reason"] = validation_reason(rec)
         rec["_verdict"] = verdict
         rec["_req_model"] = req_model
-        rec["_pairing_status"] = self.pairing_status(rec)
+        rec["_pairing_status"] = pairing
+        rec["_evidence_source"] = source
 
         prev_verdict = self.rid_kind.get(rid)
         if kind == "new":
@@ -761,6 +860,7 @@ class Monitor:
             "req_model": rec.get("_req_model"),
             "expect": rec.get("_expect"),
             "pairing_status": rec.get("_pairing_status"),
+            "evidence_source": rec.get("_evidence_source"),
             "suspect_reason": rec.get("_suspect_reason"),
             "verdict": rec.get("_verdict", "normal"),
             "effort": rec.get("effort"),
@@ -804,7 +904,34 @@ class Monitor:
             "clients": self.broker.count(),
             "up": round(time.time() - self.started_at, 1),
             "server_time": time.time(),
+            "evidence": self.evidence_stats(),
         }
+
+    def evidence_stats(self):
+        """旁路证据索引的只读计数。stats() 会被 HTTP 高频调用，这里只读内存字段。"""
+        out = {
+            "enabled": self.evidence is not None,
+            "index_keys": dict(self._index_stats.get("keys") or {}),
+            "index_rejected": self._index_stats.get("rejected", 0),
+            "index_sources": dict(self._index_stats.get("sources") or {}),
+            "backfilled": self._evidence_backfilled,
+            "conflicts": self._evidence_conflicts,
+        }
+        if self.evidence is not None:
+            out.update({
+                "codex_home": self.evidence.home,
+                "poll_seconds": self.evidence.poll_seconds,
+                "polls": self.evidence.polls,
+                "last_poll": self.evidence.last_poll,
+                "last_error": self.evidence.last_error,
+                # 正在跟踪哪个日志库、游标走到哪：日志轮转时靠这三项判断通道有没有跟上。
+                "log_db": self.evidence.log.db_name,
+                "log_last_id": self.evidence.log.last_id,
+                "log_rows_indexed": self.evidence.log.rows_indexed,
+                "rollout_files": len(self.evidence.rollout.files),
+                "sources": self.evidence.last_counts,
+            })
+        return out
 
     def snapshot(self):
         with self.lock:
@@ -1052,6 +1179,128 @@ class Monitor:
         self.broker.publish({"type": "patch", "upserts": [],
                              "alerts": [], "stats": stats})
 
+    # ---------------- 旁路证据索引（只读 codex 日志 / 会话 rollout） ----------------
+    # 两条通道都只读外部文件，与内存扫描完全解耦：没有 codex.exe 也在跑，
+    # 也不会把任何东西写进被观测进程或 C++ 扫描器。
+    def _remember_index_entry(self, entry):
+        """把一条证据装进内存索引；被熔断作废的键不入内存，也不参与配对。"""
+        if entry.get("rejected"):
+            return
+        if entry["key_kind"] == "item":
+            bucket = self.index_items.setdefault(entry["key_value"][:ITEM_BUCKET_LEN], [])
+            for existing in bucket:
+                # 同键（无论是否已作废）一律不覆盖：作废的键不会因为再次出现就复活。
+                if existing["key_value"] == entry["key_value"]:
+                    return
+            bucket.append(entry)
+            self._index_item_count += 1
+            return
+        if entry["key_kind"] != "resp_id":
+            return
+        if (self.index_rid.get(entry["key_value"]) or {}).get("rejected"):
+            return
+        self.index_rid[entry["key_value"]] = entry
+
+    def poll_evidence(self):
+        """轮询一次旁路证据：落库 → 装内存 → 回补历史。返回本轮新增条数。"""
+        if self.evidence is None:
+            return 0
+        entries, counts = self.evidence.poll()
+        if not entries:
+            return 0
+        conflicts = self.store.index_save(entries)
+        rejected = {(c["key_kind"], c["key_value"]) for c in conflicts}
+        stats = self.store.index_stats()
+        with self.lock:
+            # 冲突键必须同时从内存索引里作废：库内标了 rejected 但内存仍留着旧模型的话，
+            # 配对会继续用那个已经失效的键，等于熔断没生效。之前没见过的键也放一个作废
+            # 占位，这样卡片能显示"键冲突"而不是笼统的"没有证据"。
+            for conflict in conflicts:
+                kind, key = conflict["key_kind"], conflict["key_value"]
+                if kind == "item":
+                    bucket = self.index_items.get(key[:ITEM_BUCKET_LEN])
+                    for existing in bucket or ():
+                        if existing["key_value"] == key:
+                            existing["rejected"] = 1
+                            break
+                    continue
+                if kind != "resp_id":
+                    continue
+                existing = self.index_rid.get(key)
+                if existing is None:
+                    self.index_rid[key] = {"key_kind": kind, "key_value": key, "rejected": 1,
+                                           "model": conflict.get("kept"),
+                                           "source": conflict.get("source")}
+                else:
+                    existing["rejected"] = 1
+            for entry in entries:
+                if (entry["key_kind"], entry["key_value"]) in rejected:
+                    continue
+                self._remember_index_entry(entry)
+            self._index_stats = stats
+            self._evidence_conflicts += len(conflicts)
+        backfilled = self._backfill_evidence()
+        if conflicts:
+            sample = "；".join(f"{c['key_value'][:16]}… 首见 {c['kept']} / 再见 {c['conflict']}"
+                               for c in conflicts[:3])
+            self.log("warn", f"证据索引 {len(conflicts)} 个键冲突，已整键作废（不猜）：{sample}")
+        else:
+            self.log("info", f"证据索引新增 {len(entries)} 条（日志前缀 + 会话记录）· "
+                             f"本轮回补 {backfilled} 条历史记录")
+        return len(entries)
+
+    def _backfill_evidence(self):
+        """证据后到时回头修卡片：只处理还没有请求模型的记录。
+
+        已经在内存里判过的记录不在这里改写，避免和采集线程同时重判同一条；
+        刚采到但 item 还没写进日志的响应，会在后续轮询里被这里补上。
+        """
+        upserts, alerts, changed = [], [], []
+        with self.lock:
+            for rec in self.store.responses_missing_request_model(EVIDENCE_BACKFILL_LIMIT):
+                req_model, _source, pairing = self.resolve_request_model(rec)
+                if req_model is None:
+                    continue
+                if (rec.get("_req_model"), rec.get("_pairing_status")) == (req_model, pairing):
+                    continue
+                self.rid_kind.setdefault(rec["response_id"], rec.get("_verdict", "incomplete"))
+                alert = self.apply_verdict(rec, "update")
+                if alert:
+                    alerts.append(alert)
+                changed.append(rec)
+                upserts.append(self.ser(rec))
+            if changed:
+                self.store.save_batch(changed, backend=self.backend)
+                self.count = dict(self.store.totals()["counts"])
+                self._evidence_backfilled += len(changed)
+                for rec in changed:
+                    cached = self.seen.get(rec["response_id"])
+                    if cached is not None:
+                        cached.update({k: rec.get(k) for k in
+                                       ("_verdict", "_req_model", "_pairing_status", "_evidence_source")})
+        if upserts or alerts:
+            self.broker.publish({"type": "patch", "upserts": upserts,
+                                 "alerts": alerts, "stats": self.stats()})
+        return len(changed)
+
+    def start_evidence(self):
+        """启动旁路证据线程（与内存采集线程相互独立）。"""
+        if self.evidence is None:
+            return
+        self.log("info", f"证据索引启动：只读 codex 日志 + 会话记录 · "
+                         f"目录={self.evidence.home} · 轮询={self.evidence.poll_seconds:g}s")
+        threading.Thread(target=self._evidence_loop, name="evidence", daemon=True).start()
+
+    def _evidence_loop(self):
+        while not self._stop.is_set():
+            interval = self.evidence.poll_seconds if self.evidence else 2.0
+            try:
+                self.poll_evidence()
+            except Exception as exc:
+                # 日志轮转、文件被独占都可能是暂时的，单轮失败不能让证据线程退出。
+                self.log("error", f"证据索引轮询异常: {exc}")
+            self._stop.wait(interval)
+
     # ---------------- 采集线程（常驻，与 HTTP 服务解耦） ----------------
     def run(self):
         self.status = "starting"
@@ -1119,6 +1368,10 @@ class Monitor:
                 "rounds": self.rounds,
                 "hz": self.hz(),
                 "candidates": list(self.candidates),
+                "evidence": {
+                    **self.evidence_stats(),
+                    "index_now": {"item": self._index_item_count, "resp_id": len(self.index_rid)},
+                },
             }
             if sweep is None:
                 out["reason"] = {
@@ -1428,11 +1681,15 @@ def main():
         from native_scanner import EXECUTABLE
         if not os.path.isfile(EXECUTABLE):
             return 4
-    monitor = Monitor(effective["expect"], idle, args.log, workers=workers, backend=args.backend, db_path=args.db)
+    monitor = Monitor(effective["expect"], idle, args.log, workers=workers, backend=args.backend, db_path=args.db,
+                      evidence=True)
     Handler.monitor = monitor
 
     worker = threading.Thread(target=monitor.run, name="collector", daemon=True)
     worker.start()
+
+    # 旁路证据索引（只读 codex 自有日志/会话记录）独立于内存采集线程。
+    monitor.start_evidence()
 
     # ---- HTTP：只做静态托管 + 状态读取，不参与扫描 ----
     try:

@@ -86,6 +86,9 @@ function hhmmss(ts){
 }
 const VERDICT_CN = { normal:'正常', subtask:'子任务',
                      incomplete:'不完整', downgrade:'降级' };
+// 请求模型这条证据是从哪来的：内存配对是原有通道，后两个是只读旁路索引。
+const EVIDENCE_CN = { memory_websocket:'内存配对', rollout_token_usage:'会话记录',
+                      codex_log_prefix:'codex 日志' };
 
 function toast(msg, isErr){
   el.toast.textContent = msg;
@@ -316,6 +319,7 @@ function cardHtml(r){
     <div class="card-sub">
       <button type="button" class="rid" title="${esc(r.rid)} · 双击复制完整请求号" aria-label="请求号 ${esc(shortId(r.rid))}，双击或按回车复制完整请求号">${esc(shortId(r.rid))}</button>
       ${r.expect ? meta('采集时预期', r.expect) : ''}
+      ${r.evidence_source ? meta('证据来源', EVIDENCE_CN[r.evidence_source] || r.evidence_source) : ''}
       ${meta('格式', r.text_format)}
       ${meta('创建', r.created_at)}
       ${meta('完成', r.completed_at)}
@@ -331,7 +335,7 @@ function cardHtml(r){
 function cardSig(r){
   return [r.model, r.req_model, r.expect, r.verdict, r.effort, r.status, r.text_format,
           r.created_at, r.completed_at, r.duration_seconds, r.marks, r.updates,
-          r.last_seen, r.pairing_status, r.suspect_reason].join('\u0002');
+          r.last_seen, r.pairing_status, r.evidence_source, r.suspect_reason].join('\u0002');
 }
 
 function createCardNode(r){
@@ -508,10 +512,24 @@ async function doDiagnose(){
   const phases = native ? `<h3>C++ 解析诊断</h3><pre>${esc(JSON.stringify(native, null, 2))}</pre>
     <p>read/parse/prefilter_worker_seconds 是各线程累计时间，不能相加当作单轮耗时。
     incomplete_candidates 包含无效内存片段，不等于漏采请求数；区域枚举耗时可能来自缓存。</p>` : '';
+
+  // 旁路证据索引：只读 codex 自有日志/会话记录，用来补齐"找不到前序请求"的请求模型。
+  const ev = d.evidence || null;
+  const evSrc = ev?.index_sources || {};
+  const evKeys = ev?.index_now || {};
+  const evidence = ev ? `<h3>请求模型证据索引（只读旁路，不进内存扫描器）</h3><pre>状态       : ${ev.enabled ? '启用' : '未启用'}${ev.codex_home ? '   目录 : ' + esc(ev.codex_home) : ''}
+轮询       : 每 ${esc(ev.poll_seconds)}s   已轮询 ${esc(ev.polls ?? 0)} 次   最近一轮 ${ev.last_poll ? esc(hhmmss(ev.last_poll)) : '—'}
+日志库     : ${esc(ev.log_db || '—')}   游标 ${esc(ev.log_last_id ?? 0)}   已读 ${esc(ev.log_rows_indexed ?? 0)} 行   会话文件 ${esc(ev.rollout_files ?? 0)} 个
+可配对键   : 响应号 ${esc(evKeys.resp_id ?? 0)} ｜ item 前缀 ${esc(evKeys.item ?? 0)} ｜ 冲突作废 ${esc(ev.index_rejected ?? 0)}
+来源分布   : 会话记录 ${esc(evSrc.rollout_token_usage ?? 0)} ｜ codex 日志 ${esc(evSrc.codex_log_prefix ?? 0)}
+回补历史   : ${esc(ev.backfilled ?? 0)} 条   本进程遇到键冲突 ${esc(ev.conflicts ?? 0)} 条${ev.last_error ? '\n最近错误   : ' + esc(ev.last_error) : ''}</pre>
+    <p>前缀是"响应 ID 与它产出的 output item ID 共享 23～25 位十六进制"这一观察结果，
+    不是官方契约：同一前缀出现第二个模型时整个键会被作废，宁可没有证据也不猜。</p>` : '';
+
   const candidates = `<details><summary>最近一轮请求候选（最多 50 条）</summary>
     <p>candidate_only 表示仅识别到请求体形状，不参与自动配对；缺少 prev 的候选也不按时间猜测配对。</p>
     <pre>${esc(JSON.stringify(s?.request_candidates || [], null, 2))}</pre></details>`;
-  openModal('诊断 · 采集线程最近一轮观测', head + table + phases + candidates, false);
+  openModal('诊断 · 采集线程最近一轮观测', head + table + phases + evidence + candidates, false);
 }
 
 function statusLabel(s){

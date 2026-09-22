@@ -8,8 +8,9 @@ import threading
 import time
 
 DEFAULT_DB = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'data', 'monitor.sqlite')
-DATA_VERSION = '0.2'
+DATA_VERSION = '0.3'
 VERDICTS = ('normal', 'subtask', 'incomplete', 'downgrade')
+INDEX_KEY_KINDS = ('resp_id', 'prefix')
 
 def validation_reason(rec):
     reasons = []
@@ -68,10 +69,23 @@ class HistoryStore:
             CREATE TABLE IF NOT EXISTS data_version (
                 id INTEGER PRIMARY KEY CHECK (id=1), version TEXT NOT NULL
             );
+            -- 旁路证据索引：键来自 codex 自有日志/会话记录，不是内存观测。
+            CREATE TABLE IF NOT EXISTS request_model_index (
+                key_kind TEXT NOT NULL, key_value TEXT NOT NULL, model TEXT NOT NULL,
+                effort TEXT, turn_id TEXT, thread_id TEXT, source TEXT NOT NULL,
+                first_seen REAL NOT NULL, last_seen REAL NOT NULL,
+                rejected INTEGER NOT NULL DEFAULT 0,
+                PRIMARY KEY (key_kind, key_value)
+            );
+            CREATE INDEX IF NOT EXISTS model_index_source ON request_model_index(source, rejected);
+            -- 旁路索引的增量游标（日志行号、rollout 文件偏移），必须落库才能跨重启续读。
+            CREATE TABLE IF NOT EXISTS evidence_state (
+                key TEXT PRIMARY KEY, value TEXT NOT NULL, updated_at REAL NOT NULL
+            );
         ''')
         self.db.execute('INSERT OR IGNORE INTO data_version(id,version) VALUES (1,?)', (DATA_VERSION,))
-        # 0.2 only extends evidence JSON; historical responses and verdicts are untouched.
-        self.db.execute("UPDATE data_version SET version=? WHERE id=1 AND version='0.1'", (DATA_VERSION,))
+        # 0.2 只扩展证据 JSON；0.3 只新增旁路证据索引表。两者都不重写历史响应与判定。
+        self.db.execute("UPDATE data_version SET version=? WHERE id=1 AND version IN ('0.1','0.2')", (DATA_VERSION,))
         if self.db.execute('PRAGMA user_version').fetchone()[0] == 0:
             self.db.execute('PRAGMA user_version=1')
         self.data_version = self.db.execute('SELECT version FROM data_version WHERE id=1').fetchone()[0]
@@ -197,6 +211,99 @@ class HistoryStore:
         with self.lock:
             rows = self.db.execute('SELECT payload,first_seen FROM request_evidence WHERE previous_id=? ORDER BY first_seen DESC LIMIT 50', (previous,)).fetchall()
             return [{**json.loads(row[0]), 'first_seen': row[1]} for row in rows]
+
+    # ---------------- 旁路证据索引（codex 日志前缀 / rollout 响应号） ----------------
+    def index_save(self, entries):
+        """写入旁路证据索引，返回被判定为冲突的键。
+
+        同一个键（响应号或其前缀）出现第二个不同模型时，整个键作废并保留首见模型：
+        前缀是对服务端 ID 生成规则的逆向观察，冲突意味着这次观察失效，
+        此时宁可没有证据，也不能按"最后一次写入"猜一个模型出来。
+        """
+        conflicts = []
+        entries = list(entries)
+        if not entries: return conflicts
+        now = time.time()
+        with self.lock, self.db:
+            self.db.execute('BEGIN IMMEDIATE')
+            for entry in entries:
+                kind, key, model = entry['key_kind'], entry['key_value'], entry['model']
+                # 索引层可能已经把"同一轮内撞键"的条目标成作废，这里同样要认。
+                incoming = bool(entry.get('rejected'))
+                row = self.db.execute('SELECT model,rejected FROM request_model_index '
+                                      'WHERE key_kind=? AND key_value=?', (kind, key)).fetchone()
+                if row is None:
+                    self.db.execute('INSERT INTO request_model_index VALUES (?,?,?,?,?,?,?,?,?,?)',
+                                    (kind, key, model, entry.get('effort'), entry.get('turn_id'),
+                                     entry.get('thread_id'), entry['source'], now, now,
+                                     1 if incoming else 0))
+                    if incoming:
+                        conflicts.append({'key_kind': kind, 'key_value': key, 'kept': model,
+                                          'conflict': entry.get('conflict_model'),
+                                          'source': entry['source']})
+                elif incoming or row['model'] != model:
+                    if not row['rejected']:
+                        self.db.execute('UPDATE request_model_index SET rejected=1,last_seen=? '
+                                        'WHERE key_kind=? AND key_value=?', (now, kind, key))
+                        conflicts.append({'key_kind': kind, 'key_value': key,
+                                          'kept': row['model'],
+                                          'conflict': entry.get('conflict_model') or model,
+                                          'source': entry['source']})
+                else:
+                    self.db.execute('UPDATE request_model_index SET last_seen=?, effort=COALESCE(?,effort), '
+                                    'turn_id=COALESCE(?,turn_id), thread_id=COALESCE(?,thread_id) '
+                                    'WHERE key_kind=? AND key_value=?',
+                                    (now, entry.get('effort'), entry.get('turn_id'),
+                                     entry.get('thread_id'), kind, key))
+        return conflicts
+
+    def index_drop_kinds(self, kinds):
+        """删除指定类型的索引键（索引格式升级时用），返回删除条数。"""
+        kinds = tuple(kinds)
+        if not kinds: return 0
+        with self.lock, self.db:
+            marks = ','.join('?' * len(kinds))
+            cursor = self.db.execute(f'DELETE FROM request_model_index WHERE key_kind IN ({marks})', kinds)
+            return cursor.rowcount
+
+    def index_load(self, limit=200000):
+        with self.lock:
+            rows = self.db.execute('SELECT key_kind,key_value,model,effort,turn_id,thread_id,source,rejected '
+                                   'FROM request_model_index ORDER BY last_seen DESC LIMIT ?', (limit,)).fetchall()
+        return [dict(row) for row in rows]
+
+    def index_stats(self):
+        counts, rejected, sources = {}, 0, {}
+        with self.lock:
+            for row in self.db.execute('SELECT key_kind,source,rejected,COUNT(*) FROM request_model_index '
+                                       'GROUP BY key_kind,source,rejected'):
+                if row[2]:
+                    rejected += row[3]
+                    continue
+                counts[row[0]] = counts.get(row[0], 0) + row[3]
+                sources[row[1]] = sources.get(row[1], 0) + row[3]
+        return {'keys': counts, 'rejected': rejected, 'sources': sources}
+
+    def state_get(self, key, default=None):
+        with self.lock:
+            row = self.db.execute('SELECT value FROM evidence_state WHERE key=?', (key,)).fetchone()
+        if row is None: return default
+        try:
+            return json.loads(row[0])
+        except ValueError:
+            return default
+
+    def state_set(self, key, value):
+        with self.lock, self.db:
+            self.db.execute('INSERT INTO evidence_state(key,value,updated_at) VALUES (?,?,?) '
+                            'ON CONFLICT(key) DO UPDATE SET value=excluded.value,updated_at=excluded.updated_at',
+                            (key, json.dumps(value, ensure_ascii=False), time.time()))
+
+    def responses_missing_request_model(self, limit=500):
+        with self.lock:
+            rows = self.db.execute('SELECT payload FROM responses WHERE req_model IS NULL '
+                                   'ORDER BY last_seen DESC LIMIT ?', (limit,)).fetchall()
+        return [json.loads(row[0]) for row in rows]
 
     def totals(self):
         with self.lock:
