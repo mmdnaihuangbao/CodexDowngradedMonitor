@@ -234,7 +234,7 @@ powershell -NoProfile -ExecutionPolicy Bypass `
 
 各模型的实际命名以对话当时各自服务端的返回为准——毕竟这正是本项目要监控的东西。
 
-<sub>摆烂备注：请求模型匹配优化这活，GPT 5.6 Sol 直接表示搞不成，最后由 DeepSeek V4.1 Flash 整好了。</sub>
+<sub>摆烂备注：请求模型匹配优化这活，GPT 5.6 Sol 调查了半小时后表示搞不成，提供了完整思路还是搞不成；同一思路 DeepSeek V4.1 Flash 十分钟干完了。</sub>
 
 ## 许可证
 
