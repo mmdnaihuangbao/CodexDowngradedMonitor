@@ -220,6 +220,22 @@ powershell -NoProfile -ExecutionPolicy Bypass `
 
 其中 `_selftest.py` 会启动临时服务，检查静态资源、快照、SSE、配置、日志清理、端口顺延和停止接口；C++ 测试覆盖跨块对象、长字段、相邻对象隔离、请求配对、只读进程读取和辅助进程生命周期。
 
+## 模型说明
+
+本项目是一次多模型协作的 vibecoding 实验，各部分大致由以下模型完成：
+
+| 工作内容 | 模型 |
+| --- | --- |
+| 调研、前端、最小实现、请求模型匹配优化 | DeepSeek V4.1 Flash |
+| 前端设计 | Hy4 preview（WorkBuddy） |
+| 优化、文档、GitHub Actions | GPT 6 Astra |
+| 摆烂（请求模型匹配优化） | GPT 5.6 Sol |
+| 文档、版本管理 | GLM 5.3 Flash |
+
+各模型的实际命名以对话当时各自服务端的返回为准——毕竟这正是本项目要监控的东西。
+
+<sub>摆烂备注：请求模型匹配优化这活，GPT 5.6 Sol 直接表示搞不成，最后由 DeepSeek V4.1 Flash 整好了。</sub>
+
 ## 许可证
 
 本项目基于 [MIT License](LICENSE) 发布。MIT 只授予版权与许可声明中的权利，不代表本项目符合任何第三方服务条款；使用前请先阅读[条款与责任](#条款与责任)一节。
