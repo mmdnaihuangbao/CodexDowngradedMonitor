@@ -10,7 +10,18 @@ This project is a **pure vibecoding experiment**: requirements, implementation, 
 
 Compared with the community-favorite "pelican test", this project **consumes zero tokens**: it captures one of the primary signatures of downgrades locally via a read-only side channel, without sending any extra test requests. Compared with setting up a proxy to capture traffic, it stays off the network path and modifies no traffic, so the risk is lower. To be clear, it captures only **one signature** of downgrades; it does not imply all downgrades share the same principle or mechanism — this project only covers the "requested model differs from the model actually served" case. Other forms of downgrading are outside its observation scope.
 
-## Read Before Publishing / Using
+![Downgrade Radar panel overview](images/panel-overview.png)
+
+Left: verdict categories and sampling parameters. Center: the request list. Right: evidence detail for the selected request.
+
+| Normal request | Downgraded request |
+| --- | --- |
+| ![Verdict detail of a normal request](images/panel-normal-detail.png) | ![Verdict detail of a downgraded request](images/panel-downgrade.png) |
+| Request model and response model match (`gpt-6-astra → gpt-6-astra`), so the verdict is **normal**; the evidence comes from the response-ID prefix. | The request model is `gpt-6-astra` but the response model is `gpt-5.6-luna`, so the verdict is **downgraded**; the evidence comes from the previous response ID. |
+
+The screenshots come from a single real run on the author's machine. The model names and counters in them reflect only what was observed at that moment, and are not official conclusions.
+
+## Read Before Use
 
 ### Terms and Responsibility
 
