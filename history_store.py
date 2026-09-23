@@ -331,6 +331,10 @@ class HistoryStore:
             counts = {v: 0 for v in VERDICTS}
             for row in self.db.execute('SELECT verdict,COUNT(*) FROM responses WHERE suspect=0 GROUP BY verdict'):
                 counts[row[0]] = row[1]
+            # 请求错误是状态维度、不是判定：failed 只出现在 normal/subtask 里，
+            # 与 verdict 计数重叠，所以单独给一个 key，不并入任何判定档。
+            counts['error'] = self.db.execute(
+                "SELECT COUNT(*) FROM responses WHERE suspect=0 AND status='failed'").fetchone()[0]
             total, suspects, paired = self.db.execute('''SELECT COUNT(*),COALESCE(SUM(suspect),0),
                 COALESCE(SUM(CASE WHEN suspect=0 AND req_model IS NOT NULL THEN 1 ELSE 0 END),0) FROM responses''').fetchone()
             self._totals = {'counts':counts,'captured':total-suspects,'suspect_count':suspects,'stored_total':total,'paired':paired}
@@ -339,13 +343,14 @@ class HistoryStore:
 
     def query(self, page=1, page_size=50, filter='all', q='', start=None, end=None):
         if page < 1 or not 1 <= page_size <= 200: raise ValueError('页码或每页数量无效')
-        if filter not in ('all','suspect',*VERDICTS): raise ValueError('筛选条件无效')
+        if filter not in ('all','suspect','error',*VERDICTS): raise ValueError('筛选条件无效')
         if len(q) > 500: raise ValueError('搜索内容过长')
         for t in (start,end):
             if t is not None and not math.isfinite(t): raise ValueError('时间无效')
         if start is not None and end is not None and start > end: raise ValueError('开始时间不能晚于结束时间')
         clauses=['suspect=?'];params=[int(filter=='suspect')]
         if filter in VERDICTS:clauses.append('verdict=?');params.append(filter)
+        elif filter=='error':clauses.append("status='failed'")
         if q:
             literal=q.lower().replace('\\','\\\\').replace('%','\\%').replace('_','\\_')
             clauses.append("search_text LIKE ? ESCAPE '\\'");params.append('%'+literal+'%')

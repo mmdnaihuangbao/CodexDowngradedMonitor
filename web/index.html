@@ -1,72 +1,153 @@
 <!DOCTYPE html>
-<html lang="zh-CN">
+<html lang="zh-CN" data-theme="dark">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="dark light">
 <title>降智雷达</title>
 <link rel="icon" type="image/png" href="/icon.png">
 <link rel="stylesheet" href="/style.css">
 </head>
 <body>
-<div class="workspace">
-<header class="topbar">
-  <div class="brand"><div class="brand-icon" aria-hidden="true"><img src="/icon.png" alt=""></div><div><div class="eyebrow">CODEX / IQ DROP RADAR</div><h1>降智雷达</h1></div></div>
-  <div class="connection"><span class="dot" id="live-dot"></span><span class="pill" id="status-pill">连接中…</span></div>
-  <div class="actions">
-    <button class="abtn" id="btn-diag" title="查看最近一轮扫描统计">诊断</button>
-    <button class="abtn" id="btn-cfg" title="修改预期模型、最小采样间隔与并行线程">配置</button>
-    <button class="abtn" id="btn-clear" title="清空当前运行日志显示，保留数据库历史">日志清屏</button>
-    <button class="abtn danger" id="btn-stop" title="停止采集并退出服务">停止采集</button>
-  </div>
-</header>
-<section class="overview" aria-label="监控概览">
-  <div class="counts">
-    <button class="cnt c-normal" data-filter="normal"><span class="count-label"><i></i>正常响应<span class="count-arrow">↗</span></span><b id="c-normal">0</b></button>
-    <button class="cnt c-subtask" data-filter="subtask"><span class="count-label"><i></i>子任务<span class="count-arrow">↗</span></span><b id="c-subtask">0</b></button>
-    <button class="cnt c-incomplete" data-filter="incomplete"><span class="count-label"><i></i>证据不完整<span class="count-arrow">↗</span></span><b id="c-incomplete">0</b></button>
-    <button class="cnt c-downgrade" data-filter="downgrade"><span class="count-label"><i></i>模型降级<span class="count-arrow">↗</span></span><b id="c-downgrade">0</b></button>
-  </div>
-</section>
-<details class="collector-details"><summary><span>采集详情</span><span class="collector-summary">已捕获 <b id="m-captured">0</b><span class="divider">/</span>请求配对 <b id="m-paired">0</b></span></summary>
-  <div class="meta" id="meta">
-    <span class="m"><em>采集后端</em><b id="m-backend">—</b></span>
-    <span class="m"><em>PID</em><b id="m-pid">—</b></span>
-    <span class="m"><em>采样频率</em><b id="m-hz">—</b></span>
-    <span class="m"><em>单轮耗时</em><b id="m-cost">—</b></span>
-    <span class="m"><em>单轮扫描量</em><b id="m-bytes">—</b></span>
-    <span class="m"><em>扫描线程</em><b id="m-workers">—</b></span>
-    <span class="m"><em>最小采样间隔</em><b id="m-idle">—</b></span>
-    <span class="m"><em>轮数</em><b id="m-rounds">0</b></span>
-    <span class="m"><em>最后采样</em><b id="m-last">—</b></span>
-  </div>
-</details>
-<main>
-  <div class="list-heading"><h2>请求记录 <span id="result-count">0 条请求</span></h2><span class="list-hint">请求号双击复制 · 创建时间从新到旧</span></div>
-  <div class="toolbar">
-    <div class="filters" id="filters" aria-label="按判定筛选">
-      <button class="fbtn active" data-filter="all">全部</button><button class="fbtn" data-filter="downgrade">降级</button><button class="fbtn" data-filter="incomplete">不完整</button><button class="fbtn" data-filter="subtask">子任务</button><button class="fbtn" data-filter="normal">正常</button><button class="fbtn" id="filter-suspect" data-filter="suspect">疑似样本</button>
+<div class="desk">
+  <div class="amb amb-blue" aria-hidden="true"></div>
+  <div class="amb amb-violet" aria-hidden="true"></div>
+  <div class="amb amb-cyan" aria-hidden="true"></div>
+  <div class="amb amb-magenta" aria-hidden="true"></div>
+
+  <div class="win" id="win">
+    <!-- ---------------------------------------------------- 侧边栏 -->
+    <aside class="sidebar">
+      <div class="brand">
+        <div class="eyebrow">CODEX IQ DROP RADAR</div>
+        <h1>降智雷达</h1>
+      </div>
+
+      <div class="group-title">判定</div>
+      <nav class="nav" id="nav-verdict" aria-label="按判定筛选">
+        <button type="button" class="nav-item" data-filter="all">
+          <i class="vdot v-all"></i><span class="nav-label">全部请求</span><span class="nav-count" id="n-all">0</span>
+        </button>
+        <button type="button" class="nav-item" data-filter="normal">
+          <i class="vdot v-normal"></i><span class="nav-label">正常</span><span class="nav-count" id="n-normal">0</span>
+        </button>
+        <button type="button" class="nav-item" data-filter="subtask">
+          <i class="vdot v-subtask"></i><span class="nav-label">子任务</span><span class="nav-count" id="n-subtask">0</span>
+        </button>
+        <button type="button" class="nav-item" data-filter="incomplete">
+          <i class="vdot v-incomplete"></i><span class="nav-label">不完整</span><span class="nav-count" id="n-incomplete">0</span>
+        </button>
+        <button type="button" class="nav-item" data-filter="downgrade">
+          <i class="vdot v-downgrade soft"></i><span class="nav-label">降级</span><span class="nav-count hot" id="n-downgrade">0</span>
+        </button>
+        <button type="button" class="nav-item" data-filter="error">
+          <i class="vdot v-err soft"></i><span class="nav-label">请求错误</span><span class="nav-count warn" id="n-error">0</span>
+        </button>
+      </nav>
+
+      <div class="group-title">时间范围</div>
+      <div class="seg" id="range-seg" role="group" aria-label="时间范围">
+        <button type="button" data-range="today">今天</button>
+        <button type="button" data-range="7d">近 7 天</button>
+        <button type="button" data-range="all" class="on">全部</button>
+      </div>
+      <button type="button" class="linkbtn" id="range-custom">自定义时间范围…</button>
+
+      <div class="group-title">采集参数</div>
+      <div class="params">
+        <div class="param"><span>采样频率</span><b id="p-hz">—</b></div>
+        <div class="param"><span>扫描线程</span><b id="p-workers">—</b></div>
+        <div class="param"><span>单轮耗时</span><b id="p-cost">—</b></div>
+        <div class="param"><span>已扫轮数</span><b id="p-rounds">0</b></div>
+      </div>
+
+      <div class="grow"></div>
+
+      <div class="status-card" id="status-card">
+        <div class="status-row">
+          <span class="sdot" id="live-dot"></span>
+          <b id="status-text">连接中…</b>
+          <button type="button" class="minibtn" id="status-detail" title="查看最近一轮扫描统计">诊断</button>
+        </div>
+        <div class="stat-row">
+          <div class="stat"><span>已捕获</span><b id="s-captured">0</b></div>
+          <div class="stat"><span>请求配对</span><b id="s-paired">0</b></div>
+        </div>
+        <div class="status-hint" id="status-hint"></div>
+      </div>
+    </aside>
+
+    <!-- ---------------------------------------------------- 内容区 -->
+    <main class="content">
+      <div class="toolbar">
+        <h2 id="view-title">全部请求</h2>
+        <span class="countpill" id="view-count">0</span>
+        <div class="grow"></div>
+        <label class="search" for="search">
+          <svg viewBox="0 0 15 15" fill="none" aria-hidden="true"><circle cx="6.4" cy="6.4" r="4.2" stroke="currentColor" stroke-width="1.5"/><path d="M9.6 9.6L12.8 12.8" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
+          <input id="search" type="search" placeholder="搜索请求号、模型…" aria-label="搜索请求号、模型">
+        </label>
+        <span class="chip static" title="后端固定按创建时间倒序">最新优先</span>
+        <button type="button" class="tbtn" id="btn-diag" title="查看最近一轮扫描统计">诊断</button>
+        <button type="button" class="tbtn" id="btn-cfg" title="预期模型、最小采样间隔、并行线程与配色方案">设置</button>
+        <button type="button" class="tbtn stop" id="btn-stop" title="停止采集并退出服务"><i></i>停止采集</button>
+      </div>
+
+      <div class="list-wrap">
+        <div class="list" id="list" aria-live="polite"></div>
+        <div class="empty hidden" id="empty">
+          <h2 id="empty-title">尚未捕获到任何响应对象</h2>
+          <p>在 Codex 中发起一次对话，请求记录会在这里自动出现。</p>
+          <p class="hint" id="empty-hint"></p>
+        </div>
+      </div>
+
+      <div class="listfoot">
+        <span id="foot-summary">已显示 0 / 0 条</span>
+        <span class="foot-err" id="foot-error" role="alert"></span>
+        <span class="grow"></span>
+        <span class="foot-loading" id="foot-loading"></span>
+        <button type="button" class="minibtn" id="history-retry" title="重新拉取当前页">刷新</button>
+        <label class="foot-size">每页
+          <select id="page-size">
+            <option value="25">25</option>
+            <option value="50" selected>50</option>
+            <option value="100">100</option>
+          </select>
+        </label>
+        <button type="button" class="minibtn" id="page-prev" disabled>上一页</button>
+        <span class="foot-page">第 <input id="page-number" type="number" min="1" value="1" aria-label="页码"> / <b id="page-label">1</b> 页</span>
+        <button type="button" class="minibtn" id="page-next" disabled>下一页</button>
+      </div>
+    </main>
+
+    <!-- ---------------------------------------------------- 检查器 -->
+    <aside class="inspector" id="inspector" aria-label="请求详情"></aside>
+
+    <!-- ---------------------------------------------------- 浮层：设置 / 诊断 / 自定义时间 -->
+    <div class="sheet-wrap hidden" id="sheet-wrap">
+      <div class="sheet" role="dialog" aria-modal="true" aria-labelledby="sheet-title" id="sheet">
+        <div class="sheet-head">
+          <h3 id="sheet-title">设置</h3>
+          <button type="button" class="iconbtn" id="sheet-close" aria-label="关闭">
+            <svg viewBox="0 0 11 11" fill="none" aria-hidden="true"><path d="M2.5 2.5L8.5 8.5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/><path d="M8.5 2.5L2.5 8.5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
+          </button>
+        </div>
+        <div class="sheet-body" id="sheet-body"></div>
+        <div class="sheet-foot" id="sheet-foot"></div>
+      </div>
     </div>
-    <input id="search" class="search" type="search" aria-label="搜索请求" placeholder="搜索请求号、模型、状态…">
   </div>
-  <div class="date-range">
-    <label for="date-start">开始时间<input type="datetime-local" id="date-start" step="1"></label>
-    <span class="range-separator">至</span>
-    <label for="date-end">结束时间<input type="datetime-local" id="date-end" step="1"></label>
-    <button class="abtn" id="date-reset">重置时间</button>
-    <span class="date-hint">按创建时间筛选 · 缺失时用首次采集时间</span>
-  </div>
-  <div class="history-status"><span id="history-error" class="hidden" role="alert"></span><button id="history-retry" class="abtn">刷新记录</button><span id="page-loading" role="status"></span></div>
-  <div id="empty" class="empty"><div class="empty-icon" aria-hidden="true">⌁</div><h2>尚未捕获到任何响应对象</h2><p>在 Codex 中发起一次对话，请求记录将在这里自动出现。</p><p class="hint" id="empty-hint"></p></div>
-  <div id="cards" class="grid"></div><div id="more" class="more hidden"></div>
-  <nav class="pagination" aria-label="请求记录分页">
-    <span id="page-summary">共 0 条 · 第 1 / 1 页</span>
-    <label>每页 <select id="page-size"><option value="25">25 条</option><option value="50" selected>50 条</option><option value="100">100 条</option></select></label>
-    <div class="page-actions"><button class="abtn" id="page-prev" disabled>上一页</button><label>第 <input id="page-number" type="number" min="1" value="1" aria-label="页码"> 页</label><button class="abtn" id="page-go">跳转</button><button class="abtn" id="page-next" disabled>下一页</button></div>
-  </nav>
-</main>
 </div>
-<footer class="logbar"><button class="logtoggle" id="log-toggle"><span class="chev">▸</span>运行日志<span class="logcount" id="log-count">0</span></button><button class="logclear" id="log-clear">清屏</button><div class="logpanel hidden" id="log-panel"></div></footer>
-<div class="modal hidden" id="modal"><div class="modal-box" role="dialog" aria-modal="true" aria-labelledby="modal-title"><h3 id="modal-title">配置</h3><div class="modal-body" id="modal-body"></div><div class="modal-foot"><button class="abtn" id="modal-close">关闭</button><button class="abtn primary hidden" id="modal-save">保存</button></div></div></div>
+
+<datalist id="model-list">
+  <option value="gpt-5.6-sol"></option>
+  <option value="gpt-5.6-luna"></option>
+  <option value="gpt-5.6-terra"></option>
+  <option value="gpt-6-astra"></option>
+  <option value="gpt-6-luna"></option>
+</datalist>
+
 <div id="toast" class="toast hidden" role="status"></div>
 <script src="/app.js"></script>
 </body>
