@@ -1,221 +1,110 @@
-# Codex 模型降级监控（常驻采集器 + 本地 Web 面板）
+# CodeDowngradedMonitor · Codex 模型降级监控
 
-> **历史记录已持久化**：历史库为 `data/monitor.sqlite`，支持启动恢复、服务端分页、起止日历筛选及疑似样本隔离。详见 [历史记录说明](HISTORY.md)。
+> **仅供参考和学习，不具备实用价值。** 本项目只是一次短期的分析研究实验，用来记录和理解本机 Codex 进程中的可见字段；不应把它当作长期运行、稳定监控、生产告警或可靠审计手段。
 
-> **2026-09-22：C++ 采集器是唯一的扫描后端，Python 采集器已移除。** 双击 `start-cpp.bat`（等价于 `start.bat`，默认 48778），用 `stop-cpp.bat` 停止；命令行 `python start.py`（启动 / `--status` / `--stop`）。只读内存扫描与解析全部由 C++ 常驻辅助进程负责，Python 进程只做判定、持久化、只读证据索引与网页服务。进程发现走 Windows API，不运行 PowerShell 枚举。细节以 [C++ 采集器说明](cpp_collector/README.md) 为准。
+这是一个观察本机 Codex 请求模型变化的本地工具。背景是：当请求模型和响应对象中的 `model` 不一致时，客户端通常很难留下可复核的本地记录；这个项目尝试把这类现象记录下来，放到一个本地 Web 面板里显示正常、子任务、降级和证据不足的请求。
 
-> **2026-09-22：`--backend` 选项已取消，不再有后端可切换。** Python 内存扫描器（`ParallelScanner` / `extract_*` / `ProcessScanner`）、`start-python.bat`、`_scancheck.py`、`cpp_collector/benchmark.py`、`tools/survey_fields.py` 以及配置里的 `port` 键随之下线；历史库的 `backend` 字段保留，用于区分旧记录来源。
+这个项目是一次**纯 vibecoding 实验**：需求、实现、界面、调试和文档都在与 AI 协作的过程中完成，没有经过正式产品化、安全审计或第三方合规评估。它的定位是一次性分析研究，不是 Codex 的官方组件，也不是服务端审计工具。
 
-> **2026-09-22：新增只读旁路证据索引，补齐「找不到前序请求」的请求模型（已验收）。** Python 服务侧新增两条只读通道（codex 自有 `logs_2.sqlite` 的响应号/item 前缀、会话 rollout 的 `token_usage_record`），与内存配对交叉验证 **188/188 零冲突**，抓包 21 条真实降级样本 **21/21 给出请求侧模型**；本机历史里 `incomplete`（非疑似）由 22 条降到个位数（验收时为 6 条）。原理、到达时序与已知边界见下文「[请求模型证据](#请求模型证据三条来源与到达时序)」，调查结论见 [请求模型来源调查](cpp_collector/REQUEST_MODEL_SOURCES.md#2026-09-22-补充两条精确通道已验证)。
+## 发布前先读
 
+### 条款与责任
 
-把 `codex_model_watch2.py` 的控制台输出，改造成 **常驻静默采集 + 本地 HTTP 视图服务 + 前端卡片面板**。
+工具会读取其他程序的进程内存，以及 Codex 在本机生成的日志和会话文件。这类行为可能违反软件许可、服务条款或组织政策中的**逆向工程、数据提取、自动化访问和本地数据处理**规定，后果由使用者自行承担。不同地区、账户类型和软件版本适用的规则可能不同，请在使用前自行确认。
 
----
+使用者应只在自己拥有或明确获准操作的设备、账户和工作区上运行，并自行承担由使用、分发、修改或公开本项目带来的法律、账户、数据和系统风险。作者不提供法律意见，也不保证本项目符合任何第三方条款。
 
-## 一、架构：采集与 HTTP 是解耦的两件事
+### 它会做什么
 
-```
-┌───────────────────────────── 一个进程 ─────────────────────────────┐
-│                                                                    │
-│  采集线程（常驻，永不因没人在看而停）                                │
-│  ┌──────────────┐   ┌───────────────────────────────────────┐      │
-│  │ 进程发现/重连 │──▶│ C++ 采集器  4 个工作线程 × 4 句柄       │      │
-│  └──────────────┘   └──────────────┬────────────────────────┘      │
-│                                    │ C++ 侧分块预筛后回传            │
-│                     ┌──────────────▼───────────────┐               │
-│                     │ 状态库 Monitor（加锁）         │               │
-│                     │ 去重 / 配对 / 四级判定         │               │
-│                     └──────────────┬───────────────┘               │
-│                                    │ 变更时 publish                 │
-│                                    ▼                              │
-│                          Broker（SSE 订阅队列）                     │
-│                                    │                              │
-│  证据线程（2s，只读旁路）      ◀────┤                              │
-│  codex 日志 item 前缀 / rollout      │                              │
-│                                    │                              │
-│  HTTP 视图服务（主线程，只读）  ◀───┘                              │
-│  ┌────────────────────────────────────────────────┐                │
-│  │ GET /            → 托管 web/*.html/css/js       │                │
-│  │ GET /api/snapshot→ 读状态库全量快照              │                │
-│  │ GET /api/stream  → SSE 首帧 snapshot + 增量 patch│               │
-│  │ GET /api/diagnose→ 只读回放最近一轮观测（不扫描） │                │
-│  │ POST /api/config /api/clear /api/shutdown       │                │
-│  └────────────────────────────────────────────────┘                │
-└────────────────────────────────────────────────────────────────────┘
-```
+- 读取 `codex.exe` 的可读内存，提取响应 ID、模型、状态、effort 和前序响应号等必要字段。
+- 读取 Codex 本地 `logs*.sqlite`（常见文件名是 `logs_2.sqlite`）中的 item 关联信息。
+- 读取 `~/.codex/sessions` 和 `archived_sessions` 下的 rollout JSONL，用 `token_usage_record` 补充请求模型和完成状态。
+- 把判定结果、响应 ID、模型、状态和证据来源保存到本地 SQLite，并通过本地 HTTP/SSE 面板展示。
 
-**关键点：HTTP 层不发起扫描。** 浏览器的 `/api/diagnose` 也只是回放采集线程最近一轮的观测，
-所以「开不开网页」与「扫不扫」完全无关；反过来也不会出现两处同时读同一进程内存。
+### 它不会做什么
 
-### 扫描频率与单轮耗时
+- 不向外部服务上传内存、日志、rollout、对话正文或遥测数据。
+- 不抓包、不代理网络、不修改 Codex 配置，不向目标进程写内存。
+- 不注入 DLL、不创建远程线程、不 Hook，也不请求调试权限。
+- 不把没有请求侧证据的记录直接判为“降级”；无法配对时会标为“证据不足”。
 
-| 参数 | 默认 | 说明 |
-|---|---|---|
-| `--workers` | 4 | 并行扫描线程数，每个线程持一个独立进程句柄 |
-| `--idle` | 0 | 两轮扫描之间的空闲秒数；**0 = 连续扫描不歇** |
+### 风险与兼容性
 
-- 一轮扫描耗时 ≈ 区域字节量 ÷ 并行度，面板「单轮耗时 / 单轮扫描量 / 采样频率」是**实测值**。
-- 没找到 `codex.exe` 时采集线程按 0.5s 一轮空转（并每 2s 广播状态），不会占满 CPU。
-- 找不到 codex.exe 的枚举探测有 2s 退避（要拉 PowerShell），打开进程失败 15s 退避。
+- **仅测试过 Windows**。实现依赖 Win32 的进程发现、`VirtualQueryEx` 和 `ReadProcessMemory`；macOS/Linux 当前不支持。
+- 需要 Python 3.8+。首次运行需要用 Visual Studio 2022 的 C++ 工作负载构建原生采集器。
+- 只监控一个 `codex.exe` 引擎进程；存在多个候选进程时按当前选择规则选取一个。
+- Codex 的内存对象、日志表结构和 rollout 格式都属于内部实现，版本更新可能导致漏采、误判或旁路索引失效。
+- 连续扫描会消耗 CPU 和内存带宽；对象生命周期很短，采样间隔过大时可能漏掉请求。
+- 默认 HTTP 只监听 `localhost`。如果改成 `0.0.0.0`，接口没有身份认证，并且包含修改配置和停止服务的操作，只应在可信网络中使用。
+- 工具观察到的是进程中的协议字段，不能证明服务端实际使用了哪套模型权重，也不能替代官方账单、审计或安全日志。
 
----
+## GitHub Release 包（无需构建 C++）
 
-## 二、检测原理（继承原脚本，只有一处修正）
+GitHub Release 会提供类似 `CodeDowngradedMonitor-v0.3.0-windows-amd64.zip` 的最小运行包。压缩包已经包含 `cpp_collector\build\collector_native.exe`，使用者不需要安装 Visual Studio 或重新编译 C++；只需要 Windows、Python 3.8+ 和本机 Codex。
 
-Codex（codex.exe）收到服务端 WebSocket 帧后，会把响应对象反序列化到堆内存。
-对象里带服务端权威字段 `model`：
+1. 在 GitHub Release 页面下载 `windows-amd64.zip`。
+2. 将整个压缩包解压到任意目录，保留 `cpp_collector`、`web` 和根目录文件的相对位置。
+3. 双击 `start.bat`，或运行 `python .\start.py`。
+4. 浏览器打开 `http://localhost:48778/`；停止时运行 `python .\start.py --stop`。
 
-```json
-{"id":"resp_...","object":"response","created_at":...,"status":"...",
- "max_tool_calls":null,"model":"gpt-6-astra","moderation":null,...,
- "safety_identifier":"user-...","reasoning":{"effort":"xhigh"}}
-```
+压缩包根目录的 `README.md` 是面向使用者的免构建指引，详见仓库中的 [发布包使用指引](docs/RELEASE_USAGE.md)。包内的默认 `config.json` 直接来自创建该 Release 时所选分支的当前仓库配置。
 
-1. `VirtualQueryEx` + `ReadProcessMemory` 只读扫描（不注入、不写内存、不需提权）
-2. 只认「服务端下发」的对象：命中 ≥2 个服务端独占字段（`safety_identifier` /
-   `frequency_penalty` / `presence_penalty` / `object":"response"` / `completed_at` /
-   `max_output_tokens`），且不含客户端请求特征（`"type":"response.create"` / `client_metadata`）
-3. 配对：优先 `响应.prev == 请求.previous_response_id` → 反查「产生该响应的请求用的是哪个模型」；
-   首请求没有 `prev`（协议层面就没有前序号）时，改用只读旁路证据，见下文「请求模型证据」
+### 手动创建 Release
 
-### 四级分类
+仓库预置了 [`Build and publish Windows release`](.github/workflows/release.yml) 工作流：
 
-默认预期模型为空：请求与响应模型一致为正常，不一致沿用降级判定；无法配对为不完整，不再按 `low` 主动标记子任务。以下启发式仅在预期模型非空时适用。每条记录固定使用首次采集时的预期模型；修改配置不重算历史，旧库没有记录的预期模型不猜测回填。
+1. 打开 GitHub 仓库的 **Actions**，选择该工作流并点击 **Run workflow**。
+2. 选择要发布的分支或提交。
+3. 输入版本号（例如 `0.3.0` 或 `v0.3.0`）和本次变更内容，可选标记为预发布版本。
+4. 工作流在 Windows amd64 runner 上运行 Python 测试、构建 C++ 采集器、生成最小压缩包，并创建对应的 GitHub Release。
 
-**拿到了请求模型（配对成功）→ 这才是硬证据：**
+版本号会生成 `v` 前缀的 Git tag。发布包使用所选 revision 中的源代码和 `config.json`，不会使用发布机器上的本地数据库、日志或其他运行时文件。
 
-| 判定 | 条件 | 颜色 | 报警 |
-|---|---|---|---|
-| `normal` | 请求模型 == 响应模型 == 预期模型 | 绿 | 否 |
-| `subtask` | 请求模型 == 响应模型 != 预期模型（luna / low） | 琥珀 | 否 |
-| `downgrade` | 请求模型 ≠ 响应模型 | **红** | **是** |
+## 从源码部署与启动
 
-**没拿到请求模型（配对失败）→ 证据不足，不下"降级"结论：**
+### 环境要求
 
-| 判定 | 条件 | 颜色 | 报警 |
-|---|---|---|---|
-| `normal` | 响应模型 == 预期模型（本来就没问题，无所谓配对） | 绿 | 否 |
-| `subtask` | `effort == low`（启发式：主对话不用 low） | 琥珀 | 否 |
-| `incomplete` | 其余情况 → **不完整** | **亮黄 + 虚线边框** | **否** |
+- Windows，且本机已安装并运行 Codex，使系统中存在 `codex.exe`。
+- Python 3.8 或更高版本，`python` 已加入 `PATH`。
+- Visual Studio 2022 的 **Desktop development with C++** 工作负载和 Windows SDK。
+- Python 部分只使用标准库，不需要安装第三方包。
 
-> `incomplete` 这一级是刻意加的：原脚本在配对失败时直接 `return "downgrade"`，
-> 只要请求侧没采到就报红 —— 把「采集缺口」误报成了「模型降级」。
-> 现在这类只标黄、单列一类，不触发任何降级提示。卡片的请求/响应对比行也会写成
-> 「请求模型未采到 / 无法配对，不能据此判降级」，一眼能看出是缺数据而不是被换模型。
+### 1. 获取代码并构建 C++ 采集器
 
-### 请求模型证据：三条来源与到达时序
+```powershell
+git clone <仓库地址>
+cd CodeDowngradedMonitor
 
-「请求模型」不再只靠内存里的 `previous_response_id`。判定层按证据强度分层取用，
-**来源写进每条记录并显示在卡片上**（`memory_websocket` 之外的两条来自只读旁路索引，
-不注入、不改 Codex 配置、不代理流量，索引线程与内存扫描完全解耦）：
-
-| 来源标记 | 通道 | 配对键 | 证据何时可用 |
-|---|---|---|---|
-| `memory_websocket` | 内存扫描（原有） | `响应.prev == 请求.previous_response_id` | 采到请求对象即可，回合中途也在 |
-| `codex_log_prefix` | codex 自有 `logs_2.sqlite`（只读） | 响应 ID 与其 output item ID 共享的十六进制前缀 | **流式期间**——实测某请求**完成前 26 秒**就可用 |
-| `rollout_token_usage` | 会话 rollout JSONL（只读） | `token_usage_record.response_id` → `turn_id` → `turn_context.model` | **请求结束后**——实测完成 **+5 秒**入库 |
-
-三条给的都是**请求侧**模型（不是响应模型），所以都能支撑「请求模型 ≠ 响应模型 → 降级」。
-证据晚到时会在 2 秒内回头重判那张卡（面板上表现为「状态更新 N 次」）：
-
-```
-11:36:14 采到响应（in_progress）→ 卡片显示「不完整-未完成」
-11:37:23 服务端完成
-11:37:28 rollout 证据入库（完成 +5 秒）→ 自动改判「正常」
+powershell -NoProfile -ExecutionPolicy Bypass `
+  -File .\cpp_collector\build.ps1
 ```
 
-判定分层：**只有这三条精确通道能翻红并告警**；一条证据都没有时维持 `incomplete`（亮黄、不报警），
-绝不按时间先后、回合顺序或当前配置去猜请求模型。
+构建结果为 `cpp_collector\build\collector_native.exe`。该目录被 `.gitignore` 忽略，所以新环境需要先完成一次构建；仓库没有提交预编译二进制文件。
 
-证据线程每 2 秒还会把仍停在 `queued / in_progress` 的记录与两条只读证据**对账并补齐完成态**：
-codex 在请求收尾时写的会话记账（`token_usage_record`）出现，或者库里另一条响应把它当成
-`previous_response_id` 引用 —— 两者都说明请求已经结束，于是状态补成 `completed`。
-有记账时刻的连完成时间与请求耗时一起补上；只有"已被引用"这种证据时不编造时间。
-这是**单向判断**：命中即已结束，没命中保持"未完成"（实测已完成的记录里也只有 73% / 83% 带这两种证据，
-所以不能反推"没完成"）。补齐只解决状态卡住，**服务模型仍然只有内存里有**，扫描间隔不能因此取消。
+### 2. 启动
 
-**两类确认「请求侧没有痕迹」的响应**会长期停在「不完整」，属数据边界而不是漏采：
-`startup_prewarm`（新线程预热，日志里只剩一行 `last_model_response_id`）与上下文压缩等非持久化旁路调用
-（压缩类通常由 rollout 通道在完成后补上）。现场证据在
-[请求模型来源调查](cpp_collector/REQUEST_MODEL_SOURCES.md#2026-09-22-补充两条精确通道已验证)。
-
-前缀通道有两条硬约束（动它之前请先读调查文档）：
-① 前缀是对服务端 ID 生成规则的**逆向观察**，不是官方契约 —— 同一个 item 键出现第二个模型时
-**整键作废**，宁可没有证据也不给答案；② 那段请求前缀实测是**递增计数器**（同回合相邻请求
-常常只差最后 1–2 个 hex），所以**不能按固定长度截断取键** —— 那会取到邻居请求的模型。
-实现改为保存 item ID 前 26 位，查询时在同一线程桶内比**共享前缀最长**的那条：
-并列却给出不同模型时不给答案（`ambiguous_response_id_prefix`），因此混合模型回合只会丢覆盖，不会给错模型。
-`/api/diagnose` 的「请求模型证据索引」块会显示正在跟踪哪个日志库、游标走到哪、有多少键被作废。
-
-
-### ⚠ 对原脚本的一处修正（会直接影响漏报）
-
-原脚本响应侧的 model 正则硬编码了 `gpt-` 前缀：
-
-```python
-# 原脚本
-"model": re.compile(rb'"model"\s*:\s*"(gpt-[0-9a-zA-Z._\-]+)"')
+```powershell
+python .\start.py
 ```
 
-后果：**只要响应模型不是 `gpt-` 开头（例如 `luna-mini`），整个响应对象就被当作
-「缺 model」丢弃** —— 降级到非 gpt 命名的模型时，连卡片都不会出现，直接静默漏报。
-而请求侧用的是宽松的 `([^"]+)`，两侧不一致本身就是 bug。
+启动器会把采集服务放到后台并自动打开 `http://localhost:48778/`。也可以双击根目录的 `start.bat`。Codex 尚未运行时，面板会显示“未发现 codex.exe”；之后启动 Codex，采集器会自动重连。
 
-已统一放宽为：
+常用命令：
 
-```python
-"model": re.compile(rb'"model"\s*:\s*"([^"\\]+)"')
+```powershell
+python .\start.py --status                         # 查看运行状态
+python .\start.py --stop                           # 停止服务
+python .\start.py --no-open                        # 启动但不打开浏览器
+python .\start.py --fg                             # 前台运行，Ctrl+C 停止
+python .\start.py --expect gpt-6-astra             # 设置预期模型
+python .\start.py --workers 8 --min-interval-ms 100
 ```
 
-放宽不会引入误报：对象仍须以 `{"id":"resp_` 开头且命中 ≥2 个服务端独占字段。
+`start-cpp.bat` 是 `start.bat` 的兼容入口，`stop-cpp.bat` 会把 `--stop` 传给启动器。默认端口被占用时，服务会自动尝试后续端口，并在启动输出中打印实际地址。
 
-> 这个 bug 是用 `_scancheck.py`（假 codex 进程，该脚本已随 Python 采集器一起下线）跑出来的，不是推测：
-> 修正前 3 个响应只认出 1 个，修正后全部命中、四级判定全对。
+## 配置
 
----
-
-## 三、文件
-
-```
-collector.py      服务进程：驱动 C++ 扫描、判定与持久化、HTTP 视图服务（静默，无控制台输出）
-evidence_index.py 只读旁路证据索引（codex 自有日志 item 前缀 / 会话 rollout），补齐请求模型
-cpp_collector/    C++ 采集器：唯一的只读内存扫描与解析实现，以及它自己的测试
-start.py          启动器：启动 / 状态 / 停止（真正的控制逻辑都在这里）
-start.bat         双击启动的入口 —— 只做「找 python + 调用 start.py」，
-                  且全文件纯 ASCII + CRLF（原因见下方「bat 的编码坑」）
-web/index.html    面板页面
-web/style.css     暗色样式
-web/app.js        SSE 客户端 + 卡片渲染
-_selftest.py      接口自检（不依赖 codex）：静态资源 / snapshot / SSE / config / clear /
-                  端口顺延 / 停止，并断言控制台零输出
-collector.log     运行日志（自动生成，与前端「运行日志」抽屉同源）
-icon.png          应用图标（透明 PNG）：网页 favicon 与顶栏品牌图标都由 collector.py 直接读它提供
-                  （`/icon.png` 与 `/favicon.ico`），web/ 下不放副本；以后打包成 exe 时，
-                  同一个文件直接作为程序图标使用
-```
-
-## 四、启动
-
-**双击 `start.bat`** —— 控制台显示实际前端地址，浏览器会自动打开面板。采集器仍在后台独立运行，关闭启动窗口不会停止采集器。
-
-或者用 `start.py`（推荐，所有控制都在这里）：
-
-```bat
-python start.py                        :: 启动（已在跑就只把浏览器指过去）
-python start.py --workers 8            :: 并行扫描线程数（默认 4）
-python start.py --min-interval-ms 100  :: 最小采样间隔，单位 ms（默认 0 = 连续扫）
-python start.py --port 9000
-python start.py --expect gpt-6-astra
-python start.py --fg                   :: 前台运行，Ctrl+C 停止（排错用）
-python start.py --status               :: 查看运行状态
-python start.py --stop                 :: 停止服务
-```
-
-`start.bat` 也支持透传：`start.bat --stop` / `start.bat --status` /
-`start.bat --workers 8`。
-
-根目录 `config.json` 保存配置：
+根目录的 `config.json` 保存默认设置：
 
 ```json
 {
@@ -223,141 +112,111 @@ python start.py --stop                 :: 停止服务
   "host": "localhost",
   "cpp_port": 48778,
   "expect": "",
-  "min_interval_ms": 0,
-  "workers": 4
+  "min_interval_ms": 250,
+  "workers": 1
 }
 ```
 
-- `cpp_port` 是 HTTP 服务端口。端口被占用仍自动顺延，启动器输出实际地址。命令行 `--port` 只影响当次运行。
-- 旧配置里的 `port` 键（原 Python 采集器端口）在下次写入配置时会被自动清掉，不影响启动。
-- `host` 设置为 `0.0.0.0` 时监听所有 IPv4 网卡，局域网使用 `http://本机局域网IP:实际端口/` 访问。本机浏览器使用 `localhost`。
-- 网页可保存预期模型、最小采样间隔和线程数。间隔范围 0～60000ms，线程范围 1～16；线程变更在下一轮扫描时应用，C++ 辅助进程可重启，HTTP 服务保持运行。
-- 两轮开始时间至少相隔 `min_interval_ms`；扫描耗时超过间隔时直接开始下一轮，0 表示连续扫描。`--idle` / 采集器的 `--interval` 保留为秒单位别名，统一采用最小间隔语义。
-- 启动时显式命令行参数覆盖文件配置，只影响当次运行。网页保存将当前采样设置写回文件；HTTP 地址和端口在下次启动服务时生效。文件损坏或版本不支持时拒绝启动，不静默退回默认值。
-- SSE 每两秒推送统计心跳，无需出现新请求；“采集中”和“采集详情”持续更新。最后采样显示最近实际完成扫描的时间，不伪造新采样。
+| 字段 | 取值 | 作用 |
+| --- | --- | --- |
+| `host` | 主机名或 IPv4 地址 | 默认只监听 `localhost`；`0.0.0.0` 允许局域网访问 |
+| `cpp_port` | `1`～`65535` | HTTP 服务起始端口 |
+| `expect` | 字符串，可为空 | 预期模型，用于正常/子任务判定 |
+| `min_interval_ms` | `0`～`60000` | 两轮扫描开始时间的最小间隔；`0` 表示连续扫描 |
+| `workers` | `1`～`16` | C++ 扫描线程数，默认 `4` |
 
-实际内存字段调查见 [字段清单](FIELD_SURVEY.md)。
+面板的“设置”可以修改 `expect`、`min_interval_ms` 和 `workers`，并写回配置文件。命令行参数只覆盖当次运行。需要降低资源占用时，增大 `--min-interval-ms`；需要减少短生命周期对象漏采时，可在机器允许的范围内提高 `--workers`。
 
-### 为什么启动逻辑不放在 bat 里
+## 面板和判定
 
-cmd.exe 用**本地代码页**（中文 Windows 是 GBK）解析 `.bat`。文件里只要出现
-非 ASCII 字符（比如中文注释），就可能出现「尾字节吞掉后一个字符」的情况 ——
-`where pythonw >nul 2>nul` 里的 `>` 被吃掉，于是报：
+服务由一个 Python 进程、一个常驻 C++ 辅助进程和浏览器页面组成：
 
-```
-'onw...' 不是内部或外部命令
-'nul' 不是内部或外部命令
-'Y' 不是内部或外部命令
-```
-
-**根治办法：`.bat` 保持纯 ASCII + CRLF**，所有文案和逻辑放进 `.py`
-（Python 按 UTF-8 读源码，不受代码页影响）。现在 `start.bat` 里
-一个非 ASCII 字节都没有，注释也全是英文。
-
-### 与 `collector.py` 的关系
-
-`start.py` 是给日常用的；`collector.py` 也可以直接跑，两者不冲突：
-
-```bat
-python collector.py --port 48778 --workers 6 --idle 0
+```mermaid
+flowchart LR
+    A[Codex / codex.exe] --> B[C++ 只读扫描器]
+    B --> C[Python 监控服务]
+    D[本地 logs*.sqlite 与 rollout] --> C
+    C --> E[(data/monitor.sqlite)]
+    C --> F[HTTP + SSE]
+    F --> G[本地浏览器面板]
 ```
 
-> **控制台不会有任何输出**（stdout/stderr 已接到空设备，日志只落文件 + 前端）。
-> 端口被占用时自动顺延到 +1 … +11；`start.py` 会扫这一段端口找到实际实例，
-> 所以即使顺延了也能正常 `--status` / `--stop`，不会重复拉起第二个采集器。
+请求模型证据有三条来源：
 
-### 自检（不需要 codex）
+| 来源标记 | 关联方式 | 通常的到达时间 |
+| --- | --- | --- |
+| `memory_websocket` | 响应的 `previous_response_id` 对应请求对象 | 请求对象仍在内存中时 |
+| `codex_log_prefix` | 日志里的响应 ID 与 output item ID 共享前缀 | 流式响应期间可能出现 |
+| `rollout_token_usage` | `token_usage_record.response_id` → 回合模型 | 请求收尾并写入 rollout 后 |
 
-```bat
-python _selftest.py                        :: 接口层
-python cpp_collector/tests/test_collectors.py   :: C++ 采集器解析 + 判定链路（需先编译）
-```
+只要请求模型和响应模型有可靠证据且两者不一致，才会产生降级告警。证据可能晚于响应到达，服务会在索引更新后重新判定已有记录。
 
-## 五、接口
+| 判定 | 条件 | 告警 |
+| --- | --- | --- |
+| `normal` / 正常 | 请求模型与响应模型一致，并符合预期模型；或响应模型本身符合预期模型 | 否 |
+| `subtask` / 子任务 | 请求模型与响应模型一致，但与预期模型不同；或未配对时命中 `effort=low` 启发式 | 否 |
+| `downgrade` / 降级 | 请求模型与响应模型不一致，并且证据可追溯 | 是 |
+| `incomplete` / 不完整 | 请求模型证据不足，无法断言发生降级 | 否 |
+
+“请求错误”“进行中”“已取消”等属于响应自身的状态维度，面板会单独显示，不等同于判定结果。
+
+## Web API
+
+默认服务只绑定本机，接口如下：
 
 | 方法 | 路径 | 说明 |
-|---|---|---|
-| GET | `/` | 前端页面 |
-| GET | `/api/snapshot` | 全量状态快照（读状态库） |
-| GET | `/api/stream` | SSE：首帧 `snapshot` + 增量 `patch` |
-| GET | `/api/diagnose` | 只读回放最近一轮扫描观测（**不触发扫描**） |
-| POST | `/api/config` | `{"expect":"","min_interval_ms":0,"workers":4}`，保存到 `config.json` |
-| POST | `/api/clear` | 清空已捕获数据（采集不停） |
-| POST | `/api/shutdown` | 停止采集并退出服务 |
+| --- | --- | --- |
+| `GET` | `/api/health` | 检查服务是否在线 |
+| `GET` | `/api/snapshot` | 获取当前状态、统计、告警和运行日志 |
+| `GET` | `/api/responses` | 按判定、关键词和日期分页查询历史记录 |
+| `GET` | `/api/stream` | SSE：首帧快照，后续推送增量更新和统计心跳 |
+| `GET` | `/api/diagnose` | 回放最近一轮扫描诊断，不触发新扫描 |
+| `POST` | `/api/config` | 更新 `expect`、`min_interval_ms`、`workers` |
+| `POST` | `/api/clear` | 清空当前运行日志视图，保留 SQLite 历史记录 |
+| `POST` | `/api/shutdown` | 停止采集器和 HTTP 服务 |
 
-## 六、面板
+```powershell
+Invoke-RestMethod http://localhost:48778/api/snapshot
+```
 
-- **顶栏**：状态灯、PID、采样频率、单轮耗时、单轮扫描量、扫描线程、
-  最小采样间隔、轮数、已捕获、请求配对、最后采样
-- **统计胶囊**：正常 / 子任务 / 不完整 / 降级，单行数字胶囊，点击即筛选
-  （预期模型只在「配置」里设置，页面上不再单独显示）
-- **卡片列表**：**纵向单列，一行一张**；左侧色条 + 徽章区分四级
-  （降级 = 红实线 + 徽章闪烁；不完整 = 亮黄虚线）
-  ；点击响应ID 可复制
-- **工具栏**：筛选、搜索、诊断、配置、清空、停止
-- **底部**：运行日志抽屉（控制台静默后，这里是唯一的运行信息出口）
+运行时数据写入 `data/monitor.sqlite`，日志写入 `collector.log`；两者默认都被 `.gitignore` 忽略。
 
-> 顶部原来那条「检测到模型降级」告警条已去掉：降级只体现在**卡片本身**（红色 + 徽章闪烁）
-> 和一次性的 toast 提示上，不再多占一行横向滚动区。
+## 项目结构
 
-### 卡片列表为什么不闪了
+| 路径 | 作用 |
+| --- | --- |
+| `start.py` | 启动、查看状态、停止服务的统一入口 |
+| `collector.py` | 判定、告警、持久化和 HTTP/SSE 服务 |
+| `native_scanner.py` | Python 与 C++ 辅助进程之间的 JSON 适配层 |
+| `process_discovery.py` | 使用 Win32 API 查找 `codex.exe` |
+| `evidence_index.py` | 只读索引 Codex 日志和 rollout |
+| `history_store.py` | SQLite 历史库、分页查询和事件记录 |
+| `cpp_collector/` | C++ 内存扫描、预筛、字段解析和原生测试 |
+| `web/` | 浏览器面板的 HTML、CSS 和 JavaScript |
+| `.github/workflows/release.yml` | 手动触发的 Windows amd64 构建与 GitHub Release 工作流 |
+| `tools/package_release.ps1` | 收集运行文件、写入发布说明并生成最小压缩包 |
+| `docs/RELEASE_USAGE.md` | 放入 Release 压缩包根目录的免构建使用指引 |
 
-面板刚做出来时，**列表每 2s 闪一下**（SSE 心跳广播也会触发一次 render）。
-根因有两个，都在前端：
+更深入的资料：
 
-1. `render()` 每次都 `cards.innerHTML = ...` 整表重建 → 节点一重建，
-   `.card` 上的入场动画 `cardin` 就重放一次。
-   **修法**：节点复用 + 内容签名比对 —— 签名不变就完全不碰 DOM；只有签名变了才
-   `updateCardNode()` 就地换 innerHTML（外层 `article` 保留，动画不重放）。
-2. 排序用 `appendChild` 挪动已挂载的节点 = 浏览器内部「移除 → 插入」，
-   **会重启它身上的 CSS 动画** → 每来一条新响应，整屏卡片一起闪一次。
-   **修法**：排序改用 flex `order`（`#cards` 已是 `flex-direction:column`），
-   只改样式属性、完全不动 DOM 结构。
+- [C++ 采集器说明](cpp_collector/README.md)：只读边界、性能实现和原生测试。
+- [历史库说明](HISTORY.md)：SQLite 表结构、迁移和兼容行为。
+- [字段调查](FIELD_SURVEY.md)：实际观测到的协议字段和调查边界。
+- [请求模型来源调查](cpp_collector/REQUEST_MODEL_SOURCES.md)：`rollout` 和 `logs*.sqlite` 证据的来源与局限。
 
-> 这两条都是实测出来的，不是推断：用 `browser-verify-via-cdp` 在真实 Chrome 里
-> 读 `getAnimations().playState` —— 心跳刷新 8 次后旧节点 `anyRestarted=false`，
-> 只有新卡片 `state=running`；改 `order` 之前旧卡是 `state=running, currentTime=67ms`
-> （即确实被重启了）。
->
-> 附带修掉一个高度不齐的坑：时间戳原来靠一个 `.spacer{flex:1}` 占位元素顶到右边，
-> 而占位元素在**可换行**的行里会挤掉一个 gap 槽位，把时间戳逼到下一行 ——
-> 于是同一屏出现 1 行/2 行混杂（99px vs 69px）。改成时间戳自身
-> `margin-left:auto` 后，5 张卡统一 69px。
+## 开发与验证
 
-> **别混淆两个 "incomplete"**：卡片右上角的状态点显示的是**响应对象自身的 status**
-> （`completed` / `in_progress` / `failed` / `incomplete` / `cancelled`，其中
-> `incomplete` 表示这次响应本身被截断），跟我们的**判定** `不完整`（配对失败、证据不足）
-> 是两回事。判定看徽章，响应状态看右上的小圆点。
+构建 C++ 采集器后，可以运行：
 
-## 七、明天用真 codex 测的建议顺序
+```powershell
+python -m unittest discover -s tests -p "test_*.py" -v
+python .\_selftest.py
+powershell -NoProfile -ExecutionPolicy Bypass `
+  -File .\cpp_collector\tests\run.ps1
+```
 
-1. 先启动 Codex，让它实际跑一次对话（**响应对象只在请求生命周期内存在**，空闲时扫不到是正常的）
-2. 双击 `start.bat`，等页面自动打开
-3. 看顶栏「采样频率 / 单轮耗时 / 单轮扫描量」：
-   - 单轮耗时明显大于 0.05s → 加 `--workers`（如 `--workers 8`）
-   - 想限制采样频率 → `--min-interval-ms 100`
-4. 点「诊断」看最近一轮的 `预筛命中块 / 原始响应对象 / 请求侧映射`：
-   - `raw_responses = 0` 且 blocks > 0 → 判据太严，需要放宽 `SERVER_MIN_MARKERS`
-   - `raw_responses > 0` 但卡片没出现 → 看 `_verdict` 分类
-5. 如果实测吞吐仍然跟不上（漏卡），再上 C++ 采集器 —— 届时面板上的数字就是决策依据
+其中 `_selftest.py` 会启动临时服务，检查静态资源、快照、SSE、配置、日志清理、端口顺延和停止接口；C++ 测试覆盖跨块对象、长字段、相邻对象隔离、请求配对、只读进程读取和辅助进程生命周期。
 
-## 八、排障
+## 许可证
 
-- **未发现 codex.exe**：确认进程名是 `codex.exe`；页面会自动重连，无需重启采集器
-- **进程无权限**：以管理员身份重新运行
-- **`start.bat` 报 `'nul' 不是内部或外部命令` / 一堆乱码命令**：
-  bat 里混进了非 ASCII 字符（最常见是中文注释），cmd 按 GBK 解析时把 `>` 吃掉了。
-  现在 `start.bat` 已是纯 ASCII + CRLF；如果以后往里加注释，**只用英文**，
-  否则请用 `python start.py` 代替
-- **一片空白但诊断有 raw_responses**：多半是配对失败，看卡片上的「请求模型未采到」
-- **不完整（黄）很多**：说明请求侧内存没扫到。先提高 `--workers` / 降低 `--idle`
-  提升采样频率；若仍然多，说明请求对象存活窗口太短，这是采集器性能问题，不是模型问题
-# v0.2：解析与请求证据
-
-C++ 后端取消请求首字段顺序限制，合并预筛选，只为实际消费的直接字段保留固定字符串视图槽，避免候选解析中的动态容器分配。内存以 2 MiB 一次读取、1 MiB 分块解析，共享一份 256 KiB 边界重叠；这样减少重复读取，又不扩大单次预筛命中后的解析范围。已识别的完整请求或响应跳过内部重复候选，按字段去重后再输出 JSON。未完整解析的对象不作为模型证据。发现已带 `response.create` 或客户端元数据的不完整候选时，在当前可读区域内按需补读，单个候选最多 4 MiB；更大的对象或已消失的内存仍可能无法采集。
-
-请求证据增加 thread/session/turn/root_turn 标识。只有请求体形状、缺少传输类型的对象标为 `memory_http_candidate` / `candidate_only`，仅展示、保存，不参与自动配对。请求与响应仍使用 previous_response_id 关联；没有关联键时不以时间、预期模型或回合模型猜测。诊断展示最近一轮最多 50 条请求候选；卡片不展示请求证据或候选展开区。这不是完整证据导出。
-
-诊断新增预筛选累计线程耗时、解析候选数、不完整候选数、补读次数、合并和序列化耗时。累计线程耗时不能相加解释为墙钟时间，不完整候选数包含无效片段，不能解释为漏采数。尚未进行运行性能对照，不能据此声明采样速度已经提高。
-
-配置格式保持 `version: "0.1"`，并行数量继续使用 `workers`，默认 4，网页保存后持久化。数据版本为 0.2：启动时只升级版本声明并兼容已有 JSON，不批量重写历史分类；运行中新增的可靠请求证据仍沿用原有补配逻辑。没有发布压缩包或自动替换正在运行的服务。
+当前仓库尚未附带 `LICENSE` 文件。正式公开到 GitHub 前，请在根目录加入明确的开源许可证，并同步更新这里的说明。

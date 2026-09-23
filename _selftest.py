@@ -7,7 +7,7 @@ import sys
 import time
 import urllib.request
 
-ROOT = r"C:\Users\naihuangbao\Desktop\CodeDowngradedMonitor"
+ROOT = os.path.dirname(os.path.abspath(__file__))
 PY = sys.executable
 PORT = 48766
 BASE = f"http://127.0.0.1:{PORT}"

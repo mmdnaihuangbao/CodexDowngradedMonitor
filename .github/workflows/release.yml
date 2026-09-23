@@ -1,0 +1,100 @@
+name: Build and publish Windows release
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: '版本号，例如 0.3.0 或 v0.3.0'
+        required: true
+        type: string
+      changes:
+        description: '本次发布的变更内容；可用分号分隔多项内容'
+        required: true
+        type: string
+      prerelease:
+        description: '标记为预发布版本'
+        required: true
+        default: false
+        type: boolean
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    name: Windows amd64 package
+    runs-on: windows-2022
+    defaults:
+      run:
+        shell: pwsh
+
+    steps:
+      - name: Checkout selected revision
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Validate repository configuration
+        run: python -m json.tool config.json > $null
+
+      - name: Run Python tests
+        run: python -m unittest discover -s tests -p "test_*.py" -v
+
+      - name: Build native collector and run native tests
+        run: .\cpp_collector\tests\run.ps1
+
+      - name: Run service self-test
+        run: python .\_selftest.py
+
+      - name: Build minimal release package
+        id: package
+        env:
+          RELEASE_VERSION: ${{ inputs.version }}
+          RELEASE_CHANGES: ${{ inputs.changes }}
+        run: |
+          $outputDirectory = Join-Path $env:RUNNER_TEMP 'codex-monitor-release'
+          .\tools\package_release.ps1 `
+            -Version $env:RELEASE_VERSION `
+            -Changes $env:RELEASE_CHANGES `
+            -OutputDirectory $outputDirectory
+
+          $versionText = $env:RELEASE_VERSION.Trim()
+          if ($versionText.StartsWith('v')) { $versionText = $versionText.Substring(1) }
+          $tag = "v$versionText"
+          $packageName = "CodeDowngradedMonitor-$tag-windows-amd64"
+          $packageZip = Join-Path $outputDirectory "$packageName.zip"
+          $releaseNotes = Join-Path $outputDirectory "$packageName-release-notes.md"
+
+          if (!(Test-Path -LiteralPath $packageZip)) { throw "Package was not created: $packageZip" }
+          if (!(Test-Path -LiteralPath $releaseNotes)) { throw "Release notes were not created: $releaseNotes" }
+
+          "release_tag=$tag" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
+          "package_name=$packageName" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
+          "package_zip=$packageZip" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
+          "release_notes=$releaseNotes" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
+
+      - name: Upload package artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ steps.package.outputs.package_name }}
+          path: ${{ steps.package.outputs.package_zip }}
+          if-no-files-found: error
+
+      - name: Create GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ steps.package.outputs.release_tag }}
+          PACKAGE_ZIP: ${{ steps.package.outputs.package_zip }}
+          RELEASE_NOTES: ${{ steps.package.outputs.release_notes }}
+        run: |
+          $arguments = @(
+            'release', 'create', $env:RELEASE_TAG, $env:PACKAGE_ZIP,
+            '--target', $env:GITHUB_SHA,
+            '--title', "CodeDowngradedMonitor $env:RELEASE_TAG",
+            '--notes-file', $env:RELEASE_NOTES
+          )
+          if ('${{ inputs.prerelease }}' -eq 'true') { $arguments += '--prerelease' }
+          gh @arguments

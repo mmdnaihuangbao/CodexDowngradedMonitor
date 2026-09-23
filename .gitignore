@@ -1,6 +1,7 @@
 # Local validation artifacts and runtime logs
 _verify/
 *.log
+port.txt
 
 # Python cache
 __pycache__/
