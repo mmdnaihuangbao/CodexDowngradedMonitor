@@ -1,6 +1,9 @@
 name: Build and publish Windows release
 
 on:
+  push:
+    tags:
+      - 'v*'
   workflow_dispatch:
     inputs:
       version:
@@ -8,12 +11,13 @@ on:
         required: true
         type: string
       changes:
-        description: '本次发布的变更内容；可用分号分隔多项内容'
-        required: true
+        description: '本次发布的变更内容；留空则自动汇总上个标签以来的提交'
+        required: false
+        default: ''
         type: string
       prerelease:
         description: '标记为预发布版本'
-        required: true
+        required: false
         default: false
         type: boolean
 
@@ -34,6 +38,9 @@ jobs:
     steps:
       - name: Checkout selected revision
         uses: actions/checkout@v4
+        with:
+          # 需要完整历史与全部标签，用于汇总上个标签以来的提交
+          fetch-depth: 0
 
       - name: Set up Python
         uses: actions/setup-python@v5
@@ -52,11 +59,70 @@ jobs:
       - name: Run service self-test
         run: python .\_selftest.py
 
+      - name: Resolve release metadata
+        id: meta
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          INPUT_VERSION: ${{ inputs.version }}
+          INPUT_CHANGES: ${{ inputs.changes }}
+          TAG_REF: ${{ github.ref_name }}
+          MANUAL_PRERELEASE: ${{ inputs.prerelease }}
+        run: |
+          if ($env:EVENT_NAME -eq 'workflow_dispatch') {
+            $version = $env:INPUT_VERSION.Trim()
+            $manualChanges = $env:INPUT_CHANGES.Trim()
+          }
+          else {
+            $tag = $env:TAG_REF.Trim()
+            if ($tag.StartsWith('v')) { $version = $tag.Substring(1) } else { $version = $tag }
+            $manualChanges = ''
+          }
+
+          if ($manualChanges) {
+            $changes = $manualChanges
+          }
+          else {
+            # 找当前提交父提交上最近的标签，即"上一个版本"的标签
+            $prev = $null
+            git describe --tags --abbrev=0 'HEAD^' 2>$null
+            if ($LASTEXITCODE -eq 0) {
+              $prev = (git describe --tags --abbrev=0 'HEAD^').Trim()
+            }
+            if ($prev) {
+              $lines = git log "$prev..HEAD" --no-merges --pretty=format:'- %s (%h)'
+            }
+            else {
+              $lines = git log --no-merges --pretty=format:'- %s (%h)'
+            }
+            $changes = ($lines -join "`n")
+            if ([string]::IsNullOrWhiteSpace($changes)) {
+              $changes = 'No user-facing changes recorded.'
+            }
+          }
+
+          $prerelease = 'false'
+          if ($env:EVENT_NAME -eq 'workflow_dispatch' -and $env:MANUAL_PRERELEASE -eq 'true') {
+            $prerelease = 'true'
+          }
+          if ($env:EVENT_NAME -ne 'workflow_dispatch' -and $version -match '(?i)(rc|beta|alpha|pre)') {
+            $prerelease = 'true'
+          }
+
+          Add-Content -Path $env:GITHUB_OUTPUT -Value "version=$version"
+          Add-Content -Path $env:GITHUB_OUTPUT -Value "prerelease=$prerelease"
+          Add-Content -Path $env:GITHUB_OUTPUT -Value 'changes<<CHANGES_EOF'
+          Add-Content -Path $env:GITHUB_OUTPUT -Value $changes
+          Add-Content -Path $env:GITHUB_OUTPUT -Value 'CHANGES_EOF'
+
+          Write-Output "version=$version prerelease=$prerelease"
+          Write-Output '--- changes ---'
+          Write-Output $changes
+
       - name: Build minimal release package
         id: package
         env:
-          RELEASE_VERSION: ${{ inputs.version }}
-          RELEASE_CHANGES: ${{ inputs.changes }}
+          RELEASE_VERSION: ${{ steps.meta.outputs.version }}
+          RELEASE_CHANGES: ${{ steps.meta.outputs.changes }}
         run: |
           $outputDirectory = Join-Path $env:RUNNER_TEMP 'codex-monitor-release'
           .\tools\package_release.ps1 `
@@ -92,6 +158,7 @@ jobs:
           RELEASE_TAG: ${{ steps.package.outputs.release_tag }}
           PACKAGE_ZIP: ${{ steps.package.outputs.package_zip }}
           RELEASE_NOTES: ${{ steps.package.outputs.release_notes }}
+          PRERELEASE: ${{ steps.meta.outputs.prerelease }}
         run: |
           $arguments = @(
             'release', 'create', $env:RELEASE_TAG, $env:PACKAGE_ZIP,
@@ -99,5 +166,5 @@ jobs:
             '--title', "CodeDowngradedMonitor $env:RELEASE_TAG",
             '--notes-file', $env:RELEASE_NOTES
           )
-          if ('${{ inputs.prerelease }}' -eq 'true') { $arguments += '--prerelease' }
+          if ($env:PRERELEASE -eq 'true') { $arguments += '--prerelease' }
           gh @arguments
