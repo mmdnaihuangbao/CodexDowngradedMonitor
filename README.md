@@ -222,4 +222,4 @@ powershell -NoProfile -ExecutionPolicy Bypass `
 
 ## 许可证
 
-当前仓库尚未附带 `LICENSE` 文件。正式公开到 GitHub 前，请在根目录加入明确的开源许可证，并同步更新这里的说明。
+本项目基于 [MIT License](LICENSE) 发布。MIT 只授予版权与许可声明中的权利，不代表本项目符合任何第三方服务条款；使用前请先阅读[条款与责任](#条款与责任)一节。
