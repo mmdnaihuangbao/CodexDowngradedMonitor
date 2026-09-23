@@ -1,4 +1,4 @@
-# CodeDowngradedMonitor · Codex 降智雷达
+# CodexDowngradedMonitor · Codex 降智雷达
 
 中文 · [English](docs/README.en.md)
 
@@ -45,7 +45,7 @@
 
 ## GitHub Release 包（无需构建 C++）
 
-GitHub Release 会提供类似 `CodeDowngradedMonitor-v0.3.0-windows-amd64.zip` 的最小运行包。压缩包已经包含 `cpp_collector\build\collector_native.exe`，使用者不需要安装 Visual Studio 或重新编译 C++；只需要 Windows、Python 3.8+ 和本机 Codex。
+GitHub Release 会提供类似 `CodexDowngradedMonitor-v0.3.0-windows-amd64.zip` 的最小运行包。压缩包已经包含 `cpp_collector\build\collector_native.exe`，使用者不需要安装 Visual Studio 或重新编译 C++；只需要 Windows、Python 3.8+ 和本机 Codex。
 
 1. 在 GitHub Release 页面下载 `windows-amd64.zip`。
 2. 将整个压缩包解压到任意目录，保留 `cpp_collector`、`web` 和根目录文件的相对位置。
