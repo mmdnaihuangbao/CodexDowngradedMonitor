@@ -1,4 +1,4 @@
-# CodeDowngradedMonitor · Codex Downgrade Radar
+# CodexDowngradedMonitor · Codex Downgrade Radar
 
 [中文](../README.md) · English
 
@@ -44,7 +44,7 @@ Users should only run it on devices, accounts, and workspaces they own or are ex
 
 ## GitHub Release Package (No C++ Build Needed)
 
-GitHub Releases provide a minimal runtime package like `CodeDowngradedMonitor-v0.3.0-windows-amd64.zip`. The archive already contains `cpp_collector\build\collector_native.exe`, so users do not need Visual Studio or a C++ rebuild; only Windows, Python 3.8+, and a local Codex are required.
+GitHub Releases provide a minimal runtime package like `CodexDowngradedMonitor-v0.3.0-windows-amd64.zip`. The archive already contains `cpp_collector\build\collector_native.exe`, so users do not need Visual Studio or a C++ rebuild; only Windows, Python 3.8+, and a local Codex are required.
 
 1. Download the `windows-amd64.zip` from the GitHub Releases page.
 2. Extract the whole archive to any directory, keeping the relative layout of `cpp_collector`, `web`, and root files.
@@ -77,7 +77,7 @@ Pushing a `v*` tag also triggers this workflow automatically. The version number
 
 ```powershell
 git clone <repository-url>
-cd CodeDowngradedMonitor
+cd CodexDowngradedMonitor
 
 powershell -NoProfile -ExecutionPolicy Bypass `
   -File .\cpp_collector\build.ps1

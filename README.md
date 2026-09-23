@@ -78,7 +78,7 @@ GitHub Release 会提供类似 `CodeDowngradedMonitor-v0.3.0-windows-amd64.zip` 
 
 ```powershell
 git clone <仓库地址>
-cd CodeDowngradedMonitor
+cd CodexDowngradedMonitor
 
 powershell -NoProfile -ExecutionPolicy Bypass `
   -File .\cpp_collector\build.ps1

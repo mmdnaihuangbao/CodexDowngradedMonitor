@@ -24,7 +24,7 @@ if ([string]::IsNullOrWhiteSpace($Changes)) {
 }
 
 $tag = "v$versionText"
-$packageName = "CodeDowngradedMonitor-$tag-windows-amd64"
+$packageName = "CodexDowngradedMonitor-$tag-windows-amd64"
 $outputRoot = [IO.Path]::GetFullPath($OutputDirectory)
 $stage = Join-Path $outputRoot $packageName
 $zipPath = Join-Path $outputRoot "$packageName.zip"

@@ -1,4 +1,4 @@
-# CodeDowngradedMonitor 发布包使用指引
+# CodexDowngradedMonitor 发布包使用指引
 
 这个压缩包已经包含 Windows amd64 版本的 C++ 采集器，使用时不需要安装 Visual Studio，也不需要重新构建 C++。它仍然只是一个仅供参考和学习的分析实验，不具备生产或长期监控价值。
 

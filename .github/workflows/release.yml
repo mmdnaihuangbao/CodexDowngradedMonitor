@@ -133,7 +133,7 @@ jobs:
           $versionText = $env:RELEASE_VERSION.Trim()
           if ($versionText.StartsWith('v')) { $versionText = $versionText.Substring(1) }
           $tag = "v$versionText"
-          $packageName = "CodeDowngradedMonitor-$tag-windows-amd64"
+          $packageName = "CodexDowngradedMonitor-$tag-windows-amd64"
           $packageZip = Join-Path $outputDirectory "$packageName.zip"
           $releaseNotes = Join-Path $outputDirectory "$packageName-release-notes.md"
 
