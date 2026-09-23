@@ -24,6 +24,9 @@ jobs:
   release:
     name: Windows amd64 package
     runs-on: windows-2022
+    env:
+      # 强制 Python 全 UTF-8 输出，否则 runner 默认 cp1252 会因打印中文抛 UnicodeEncodeError
+      PYTHONUTF8: '1'
     defaults:
       run:
         shell: pwsh
