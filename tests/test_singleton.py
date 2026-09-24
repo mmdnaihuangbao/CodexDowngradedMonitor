@@ -85,7 +85,7 @@ sys.exit(C.main())
                 state['instance_id'] = 'stale'
                 state_file = Path(directory)/'CodexDowngradedMonitor/instance.json'
                 state_file.write_text(json.dumps(state))
-                check = subprocess.run([sys.executable, '-c', 'import start; assert start.find_running(1) is None'],
+                check = subprocess.run([sys.executable, '-c', 'import start; assert start.find_running(1, legacy=False) is None'],
                                        cwd=ROOT, env=env, capture_output=True, timeout=15)
                 self.assertEqual(check.returncode, 0, check.stderr)
                 state['instance_id'] = health['instance_id']; state_file.write_text(json.dumps(state))
