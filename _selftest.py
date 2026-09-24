@@ -92,19 +92,17 @@ try:
         s, b = post("/api/clear")
         print(f"   {s} {b.decode()[:120]}")
 
-        print("\n== 端口顺延测试 ==")
-        p2 = subprocess.Popen(
-            [PY, "collector.py", "--port", str(PORT), "--no-open"],
-            cwd=ROOT, stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=env)
-        time.sleep(4)
-        try:
-            with opener.open(f"http://127.0.0.1:{PORT + 1}/api/health", timeout=5) as r:
-                print("   第二个实例自动顺延到端口", PORT + 1, "->", r.status)
-        except Exception as e:
-            print("   端口顺延失败:", e)
-            ok = False
-        p2.terminate()
-        p2.wait(timeout=10)
+        print("\n== 单例保护测试（相同及不同端口）==")
+        from instance_guard import ALREADY_RUNNING
+        for duplicate_port in (PORT, PORT + 1):
+            result = subprocess.run(
+                [PY, "collector.py", "--port", str(duplicate_port), "--no-open"],
+                cwd=ROOT, capture_output=True, env=env, timeout=10)
+            health = json.loads(get("/api/health")[2])
+            passed = (result.returncode == ALREADY_RUNNING and health['pid'] == proc.pid
+                      and not result.stdout and not result.stderr)
+            print("   端口", duplicate_port, "重复启动被拒绝:", passed)
+            ok = ok and passed
 
     print("\n== 停止接口 ==")
     s, b = post("/api/shutdown")
