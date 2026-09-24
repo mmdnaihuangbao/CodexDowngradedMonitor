@@ -1240,7 +1240,8 @@ class Handler(BaseHTTPRequestHandler):
             self._json(m.diagnose())
         elif path == "/api/health":
             self._json({"ok": True, "status": m.status, "backend": m.backend,
-                        "service": "codex-model-monitor"})
+                        "service": "codex-model-monitor", "pid": os.getpid(),
+                        "instance_id": getattr(self, "instance_id", None)})
         elif path in ("/favicon.ico", "/icon.png"):
             self._icon()
         else:
@@ -1391,6 +1392,17 @@ def serve(host, port, handler_cls, max_tries=12):
 
 
 def main():
+    from instance_guard import InstanceGuard, ALREADY_RUNNING
+    guard = InstanceGuard()
+    if not guard.acquire():
+        return ALREADY_RUNNING
+    try:
+        return _main(guard)
+    finally:
+        guard.close()
+
+
+def _main(guard):
     try:
         config = load_config()
     except (OSError, ValueError) as exc:
@@ -1437,7 +1449,7 @@ def main():
         ap.error(str(exc))
     workers = effective["workers"]
 
-    # ---- 采集器：先于 HTTP 服务构造并启动，与 HTTP 完全解耦 ----
+    # 单例锁已持有；先构造，再绑定 HTTP，成功后才启动后台扫描。
     from native_scanner import EXECUTABLE
     if not os.path.isfile(EXECUTABLE):
         return 4
@@ -1446,10 +1458,6 @@ def main():
     Handler.monitor = monitor
 
     worker = threading.Thread(target=monitor.run, name="collector", daemon=True)
-    worker.start()
-
-    # 旁路证据索引（只读 codex 自有日志/会话记录）独立于内存采集线程。
-    monitor.start_evidence()
 
     # ---- HTTP：只做静态托管 + 状态读取，不参与扫描 ----
     try:
@@ -1457,6 +1465,7 @@ def main():
     except OSError:
         # 端口全被占用：静默退出（日志无从记录）
         monitor.stop()
+        monitor.store.close()
         return 3
 
     url = f"http://{browser_host(args.host)}:{real_port}/"
@@ -1479,6 +1488,10 @@ def main():
             pass
 
     try:
+        Handler.instance_id = guard.instance_id
+        guard.publish(args.host, real_port)
+        worker.start()
+        monitor.start_evidence()
         httpd.serve_forever(poll_interval=0.5)
     except KeyboardInterrupt:
         pass
@@ -1486,7 +1499,8 @@ def main():
         monitor.stop()
         try:
             httpd.server_close()
-            worker.join(timeout=35)
+            if worker.ident is not None:
+                worker.join(timeout=35)
             monitor.store.close()
         except Exception:
             pass

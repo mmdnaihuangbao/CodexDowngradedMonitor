@@ -18,6 +18,7 @@ class NativeScanner:
         self.region_cost = 0.0
         self.metrics = {}
         self.reader = None
+        self.job = None
 
     def _read(self):
         try:
@@ -38,14 +39,18 @@ class NativeScanner:
     def open(self):
         if not os.path.isfile(EXECUTABLE):
             raise FileNotFoundError('C++ collector missing; run cpp_collector/build.ps1 first')
-        self.proc = subprocess.Popen(
-            [EXECUTABLE, '--pid', str(self.pid), '--workers', str(self.workers)],
-            stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
-            text=True, encoding='utf-8', errors='replace', bufsize=1,
-            creationflags=subprocess.CREATE_NO_WINDOW)
-        self.reader = threading.Thread(target=self._read, daemon=True, name='native-output')
-        self.reader.start()
+        from process_job import ProcessJob
+        self.job = ProcessJob()
         try:
+            self.proc = subprocess.Popen(
+                [EXECUTABLE, '--pid', str(self.pid), '--workers', str(self.workers)],
+                stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+                text=True, encoding='utf-8', errors='replace', bufsize=1,
+                creationflags=subprocess.CREATE_NO_WINDOW)
+            # Assign before sending any scan request; fail closed if containment fails.
+            self.job.assign(self.proc)
+            self.reader = threading.Thread(target=self._read, daemon=True, name='native-output')
+            self.reader.start()
             ready = self._receive().get('ready', False)
             if not ready: self.close()
             return ready
@@ -86,6 +91,9 @@ class NativeScanner:
         return data
 
     def close(self):
+        if self.job is not None:
+            self.job.close()
+            self.job = None
         proc = self.proc
         if proc is None: return
         # Stop only our own helper; never terminate or write to the observed process.

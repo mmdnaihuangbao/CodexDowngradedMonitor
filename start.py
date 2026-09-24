@@ -72,17 +72,31 @@ def api(port, path, method="GET", body=None, timeout=2.0, host="localhost"):
         return json.loads(r.read().decode("utf-8"))
 
 
-def find_running(port, host="localhost"):
-    """在 port..port+11 范围内找我们自己的服务；找不到返回 None。
+def find_running(port, host="localhost", legacy=True):
+    """返回已有实例的 (host, port)，找不到返回 None。
 
     端口被占用时采集器会自动顺延，所以这里要扫一段而不是只看一个端口。
     连不上是立刻 refused（不是等超时），所以循环很快。
     """
+    from instance_guard import read_state
+    state = read_state()
+    if state:
+        try:
+            h = api(state['port'], "/api/health", timeout=1.0, host=state['host'])
+            if (h.get('ok') and h.get('service') == 'codex-model-monitor'
+                    and h.get('pid') == state['pid']
+                    and h.get('instance_id') == state['instance_id']):
+                return state['host'], state['port']
+        except (OSError, ValueError, AttributeError):
+            pass
+    if not legacy:
+        return None
+    # Compatibility with a service started before singleton support was installed.
     for p in range(port, min(65536, port + PORT_TRIES)):
         try:
             h = api(p, "/api/health", timeout=1.0, host=host)
-            if isinstance(h, dict) and h.get("ok"):
-                return p
+            if isinstance(h, dict) and h.get("ok") and h.get('service') == 'codex-model-monitor':
+                return host, p
         except Exception:
             continue
     return None
@@ -101,10 +115,11 @@ def open_browser(port, no_open, host="localhost"):
 
 
 def cmd_status(port, host="localhost"):
-    p = find_running(port, host)
-    if p is None:
+    endpoint = find_running(port, host)
+    if endpoint is None:
         say("状态：未在运行")
         return 1
+    host, p = endpoint
     try:
         snap = api(p, "/api/snapshot", host=host)
     except Exception as e:
@@ -136,17 +151,32 @@ def cmd_status(port, host="localhost"):
 
 
 def cmd_stop(port, host="localhost"):
-    p = find_running(port, host)
-    if p is None:
+    endpoint = find_running(port, host)
+    if endpoint is None:
         say("状态：未在运行，无需停止")
         return 0
+    host, p = endpoint
+    try:
+        identity = api(p, '/api/health', host=host)
+    except (OSError, ValueError):
+        say("服务已退出或暂时无法访问。")
+        return 1
     try:
         api(p, "/api/shutdown", method="POST", body={}, host=host)
     except Exception:
         pass
     for _ in range(40):
         time.sleep(0.25)
-        if find_running(p, host) is None:
+        try:
+            current = api(p, '/api/health', host=host, timeout=0.5)
+            # Status can change during shutdown; only compare instance identity.
+            if identity.get('instance_id'):
+                stopped = current.get('instance_id') != identity['instance_id']
+            else:
+                stopped = current.get('service') != identity.get('service')
+        except (OSError, ValueError):
+            stopped = True
+        if stopped:
             say(f"已停止（端口 {p} 已释放）")
             return 0
     say(f"已发送停止指令，但端口 {p} 仍被占用；可直接结束该 python 进程")
@@ -172,9 +202,11 @@ def cmd_start(args):
         return 2
     running = find_running(args.port, args.host)
     if running is not None:
+        host, running = running
         say(f"服务已在运行（端口 {running}），直接打开面板。")
-        say(f"前端地址：http://{browser_host(args.host)}:{running}/")
-        open_browser(running, args.no_open, args.host)
+        say(f"前端地址：http://{browser_host(host)}:{running}/")
+        say("复用已有实例，本次传入的端口和扫描参数不会修改运行中的服务。")
+        open_browser(running, args.no_open, host)
         return 0
 
     if args.fg:
@@ -193,7 +225,7 @@ def cmd_start(args):
         argv += ["--log", args.log]
 
     try:
-        subprocess.Popen(
+        child = subprocess.Popen(
             argv, cwd=ROOT,
             stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL, close_fds=True,
@@ -202,19 +234,24 @@ def cmd_start(args):
         say(f"启动失败：{e}")
         return 2
 
-    # 等它就绪（最多 ~15s；采集线程首次枚举进程可能要几秒）
+    # 新服务必定发布实例记录；等待期间不反复扫描旧版端口范围。
     real = None
-    for _ in range(60):
+    deadline = time.monotonic() + 15
+    while time.monotonic() < deadline:
         time.sleep(0.25)
-        real = find_running(args.port, args.host)
+        real = find_running(args.port, args.host, legacy=False)
         if real is not None:
             break
+        if child.poll() not in (None, 5):
+            say(f"采集器启动失败，退出码 {child.returncode}；请查看日志。")
+            return child.returncode or 1
 
     if real is None:
-        say("启动超时：15s 内没等到 HTTP 服务就绪。")
+        say("等待 HTTP 服务就绪超时；已有实例可能仍在启动或无响应，不会绕过互斥锁另起扫描器。")
         say(f"请查看日志：{args.log or LOGFILE}")
         return 1
 
+    args.host, real = real
     say("")
     say("  Codex 模型降级监控 已启动")
     say("  " + "-" * 46)

@@ -63,6 +63,8 @@ $runtimeFiles = @(
     'config.json',
     'evidence_index.py',
     'history_store.py',
+    'instance_guard.py',
+    'process_job.py',
     'icon.png',
     'native_scanner.py',
     'process_discovery.py',
