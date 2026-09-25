@@ -60,6 +60,14 @@ def read_state():
         pass
     return None
 
+def instance_running():
+    """Check the per-user mutex without starting a collector or changing metadata."""
+    guard = InstanceGuard()
+    try:
+        return not guard.acquire()
+    finally:
+        guard.close()
+
 class InstanceGuard:
     def __init__(self, name=None):
         self.name = name or ('Global\\' + APP_ID + '-' + user_sid())

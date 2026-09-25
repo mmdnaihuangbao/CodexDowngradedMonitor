@@ -41,7 +41,6 @@ COLLECTOR = os.path.join(ROOT, "collector.py")
 LOGFILE = os.path.join(ROOT, "collector.log")
 
 DEFAULT_PORT = 48778
-PORT_TRIES = 12
 
 # subprocess 创建标志：无控制台窗口 + 与父进程解绑（父进程退出后继续跑）
 CREATE_NO_WINDOW = 0x08000000
@@ -51,7 +50,7 @@ DETACHED_PROCESS = 0x00000008
 def say(*args):
     """pythonw 下 sys.stdout 可能是 None，print 会抛异常 —— 全部吞掉"""
     try:
-        print(*args)
+        print(*args, flush=True)
     except Exception:
         pass
 
@@ -72,14 +71,15 @@ def api(port, path, method="GET", body=None, timeout=2.0, host="localhost"):
         return json.loads(r.read().decode("utf-8"))
 
 
-def find_running(port, host="localhost", legacy=True):
-    """返回已有实例的 (host, port)，找不到返回 None。
+class DiscoveryError(RuntimeError):
+    """An instance exists but cannot be safely identified or contacted."""
 
-    端口被占用时采集器会自动顺延，所以这里要扫一段而不是只看一个端口。
-    连不上是立刻 refused（不是等超时），所以循环很快。
-    """
-    from instance_guard import read_state
+
+def find_running(port=None, host="localhost"):
+    """优先验证实例记录；记录不可用且单例锁被持有时，只查配置端口。"""
+    from instance_guard import read_state, state_path, instance_running
     state = read_state()
+    problem = f"实例记录缺失或无法读取：{state_path()}"
     if state:
         try:
             h = api(state['port'], "/api/health", timeout=1.0, host=state['host'])
@@ -87,18 +87,28 @@ def find_running(port, host="localhost", legacy=True):
                     and h.get('pid') == state['pid']
                     and h.get('instance_id') == state['instance_id']):
                 return state['host'], state['port']
-        except (OSError, ValueError, AttributeError):
-            pass
-    if not legacy:
-        return None
-    # Compatibility with a service started before singleton support was installed.
-    for p in range(port, min(65536, port + PORT_TRIES)):
-        try:
-            h = api(p, "/api/health", timeout=1.0, host=host)
-            if isinstance(h, dict) and h.get("ok") and h.get('service') == 'codex-model-monitor':
-                return host, p
-        except Exception:
-            continue
+            problem = (f"实例身份不匹配：记录 PID={state['pid']}，"
+                       f"地址={state['host']}:{state['port']}，健康响应={h!r}")
+        except (OSError, ValueError, AttributeError) as exc:
+            problem = (f"无法验证 {state['host']}:{state['port']} "
+                       f"（记录 PID={state['pid']}）：{exc!r}")
+    if instance_running():
+        # Explorer and development tools can have different filesystem views of
+        # LOCALAPPDATA. A missing/stale JSON file does not mean the service is gone.
+        # The mutex is shared; probe only the explicitly configured endpoint.
+        if port is not None:
+            try:
+                h = api(port, '/api/health', timeout=1.0, host=host)
+                if (isinstance(h, dict) and h.get('ok')
+                        and h.get('service') == 'codex-model-monitor'
+                        and h.get('backend') == 'cpp'
+                        and type(h.get('pid')) is int and h['pid'] > 0
+                        and isinstance(h.get('instance_id'), str) and h['instance_id']):
+                    return host, port
+                problem += f"\n配置端口 {host}:{port} 未返回有效的采集器身份：{h!r}"
+            except (OSError, ValueError) as exc:
+                problem += f"\n配置端口 {host}:{port} 连接失败：{exc!r}"
+        raise DiscoveryError(f"检测到采集实例仍持有单例锁，不能判定为未运行。\n{problem}")
     return None
 
 
@@ -115,6 +125,7 @@ def open_browser(port, no_open, host="localhost"):
 
 
 def cmd_status(port, host="localhost"):
+    say("正在检查服务状态……")
     endpoint = find_running(port, host)
     if endpoint is None:
         say("状态：未在运行")
@@ -151,6 +162,7 @@ def cmd_status(port, host="localhost"):
 
 
 def cmd_stop(port, host="localhost"):
+    say("正在检查运行中的服务……")
     endpoint = find_running(port, host)
     if endpoint is None:
         say("状态：未在运行，无需停止")
@@ -161,6 +173,7 @@ def cmd_stop(port, host="localhost"):
     except (OSError, ValueError):
         say("服务已退出或暂时无法访问。")
         return 1
+    say(f"正在停止服务（端口 {p}）……")
     try:
         api(p, "/api/shutdown", method="POST", body={}, host=host)
     except Exception:
@@ -196,6 +209,7 @@ def cmd_foreground(args):
 
 
 def cmd_start(args):
+    say("正在检查已有实例……")
     from native_scanner import EXECUTABLE
     if not os.path.isfile(EXECUTABLE):
         say("尚未编译 C++ 采集器，请运行 powershell -ExecutionPolicy Bypass -File cpp_collector/build.ps1")
@@ -224,6 +238,7 @@ def cmd_start(args):
     if args.log:
         argv += ["--log", args.log]
 
+    say("正在启动采集器，等待 HTTP 服务就绪……")
     try:
         child = subprocess.Popen(
             argv, cwd=ROOT,
@@ -236,10 +251,15 @@ def cmd_start(args):
 
     # 新服务必定发布实例记录；等待期间不反复扫描旧版端口范围。
     real = None
+    discovery_error = None
     deadline = time.monotonic() + 15
     while time.monotonic() < deadline:
         time.sleep(0.25)
-        real = find_running(args.port, args.host, legacy=False)
+        try:
+            real = find_running(args.port, args.host)
+            discovery_error = None
+        except DiscoveryError as exc:
+            discovery_error = exc
         if real is not None:
             break
         if child.poll() not in (None, 5):
@@ -248,6 +268,8 @@ def cmd_start(args):
 
     if real is None:
         say("等待 HTTP 服务就绪超时；已有实例可能仍在启动或无响应，不会绕过互斥锁另起扫描器。")
+        if discovery_error:
+            say(str(discovery_error))
         say(f"请查看日志：{args.log or LOGFILE}")
         return 1
 
@@ -315,11 +337,15 @@ def main():
         ap.error(str(exc))
     args.expect = effective["expect"]
 
-    if args.status:
-        return cmd_status(args.port, args.host)
-    if args.stop:
-        return cmd_stop(args.port, args.host)
-    return cmd_start(args)
+    try:
+        if args.status:
+            return cmd_status(args.port, args.host)
+        if args.stop:
+            return cmd_stop(args.port, args.host)
+        return cmd_start(args)
+    except DiscoveryError as exc:
+        say(str(exc))
+        return 1
 
 
 if __name__ == "__main__":
