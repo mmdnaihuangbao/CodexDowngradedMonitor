@@ -1,0 +1,1802 @@
+[
+  {
+    "record": {
+      "model": "expected",
+      "effort": "low",
+      "_expect": ""
+    },
+    "request": null,
+    "current_expect": "current-config",
+    "verdict": "incomplete"
+  },
+  {
+    "record": {
+      "model": "expected",
+      "effort": "low",
+      "_verdict": "normal"
+    },
+    "request": null,
+    "current_expect": "current-config",
+    "verdict": "normal"
+  },
+  {
+    "record": {
+      "model": "expected",
+      "effort": "low",
+      "_verdict": "subtask"
+    },
+    "request": null,
+    "current_expect": "current-config",
+    "verdict": "subtask"
+  },
+  {
+    "record": {
+      "model": "expected",
+      "effort": "low",
+      "_verdict": "downgrade"
+    },
+    "request": null,
+    "current_expect": "current-config",
+    "verdict": "downgrade"
+  },
+  {
+    "record": {
+      "model": "expected",
+      "effort": "low",
+      "_verdict": "incomplete"
+    },
+    "request": null,
+    "current_expect": "current-config",
+    "verdict": "incomplete"
+  },
+  {
+    "record": {
+      "model": "expected",
+      "effort": "low",
+      "_expect": ""
+    },
+    "request": "expected",
+    "current_expect": "current-config",
+    "verdict": "normal"
+  },
+  {
+    "record": {
+      "model": "expected",
+      "effort": "low",
+      "_verdict": "normal"
+    },
+    "request": "expected",
+    "current_expect": "current-config",
+    "verdict": "normal"
+  },
+  {
+    "record": {
+      "model": "expected",
+      "effort": "low",
+      "_verdict": "subtask"
+    },
+    "request": "expected",
+    "current_expect": "current-config",
+    "verdict": "subtask"
+  },
+  {
+    "record": {
+      "model": "expected",
+      "effort": "low",
+      "_verdict": "downgrade"
+    },
+    "request": "expected",
+    "current_expect": "current-config",
+    "verdict": "downgrade"
+  },
+  {
+    "record": {
+      "model": "expected",
+      "effort": "low",
+      "_verdict": "incomplete"
+    },
+    "request": "expected",
+    "current_expect": "current-config",
+    "verdict": "normal"
+  },
+  {
+    "record": {
+      "model": "expected",
+      "effort": "low",
+      "_expect": ""
+    },
+    "request": "other",
+    "current_expect": "current-config",
+    "verdict": "downgrade"
+  },
+  {
+    "record": {
+      "model": "expected",
+      "effort": "low",
+      "_verdict": "normal"
+    },
+    "request": "other",
+    "current_expect": "current-config",
+    "verdict": "downgrade"
+  },
+  {
+    "record": {
+      "model": "expected",
+      "effort": "low",
+      "_verdict": "subtask"
+    },
+    "request": "other",
+    "current_expect": "current-config",
+    "verdict": "downgrade"
+  },
+  {
+    "record": {
+      "model": "expected",
+      "effort": "low",
+      "_verdict": "downgrade"
+    },
+    "request": "other",
+    "current_expect": "current-config",
+    "verdict": "downgrade"
+  },
+  {
+    "record": {
+      "model": "expected",
+      "effort": "low",
+      "_verdict": "incomplete"
+    },
+    "request": "other",
+    "current_expect": "current-config",
+    "verdict": "downgrade"
+  },
+  {
+    "record": {
+      "model": "expected",
+      "effort": "high",
+      "_expect": ""
+    },
+    "request": null,
+    "current_expect": "current-config",
+    "verdict": "incomplete"
+  },
+  {
+    "record": {
+      "model": "expected",
+      "effort": "high",
+      "_verdict": "normal"
+    },
+    "request": null,
+    "current_expect": "current-config",
+    "verdict": "normal"
+  },
+  {
+    "record": {
+      "model": "expected",
+      "effort": "high",
+      "_verdict": "subtask"
+    },
+    "request": null,
+    "current_expect": "current-config",
+    "verdict": "subtask"
+  },
+  {
+    "record": {
+      "model": "expected",
+      "effort": "high",
+      "_verdict": "downgrade"
+    },
+    "request": null,
+    "current_expect": "current-config",
+    "verdict": "downgrade"
+  },
+  {
+    "record": {
+      "model": "expected",
+      "effort": "high",
+      "_verdict": "incomplete"
+    },
+    "request": null,
+    "current_expect": "current-config",
+    "verdict": "incomplete"
+  },
+  {
+    "record": {
+      "model": "expected",
+      "effort": "high",
+      "_expect": ""
+    },
+    "request": "expected",
+    "current_expect": "current-config",
+    "verdict": "normal"
+  },
+  {
+    "record": {
+      "model": "expected",
+      "effort": "high",
+      "_verdict": "normal"
+    },
+    "request": "expected",
+    "current_expect": "current-config",
+    "verdict": "normal"
+  },
+  {
+    "record": {
+      "model": "expected",
+      "effort": "high",
+      "_verdict": "subtask"
+    },
+    "request": "expected",
+    "current_expect": "current-config",
+    "verdict": "subtask"
+  },
+  {
+    "record": {
+      "model": "expected",
+      "effort": "high",
+      "_verdict": "downgrade"
+    },
+    "request": "expected",
+    "current_expect": "current-config",
+    "verdict": "downgrade"
+  },
+  {
+    "record": {
+      "model": "expected",
+      "effort": "high",
+      "_verdict": "incomplete"
+    },
+    "request": "expected",
+    "current_expect": "current-config",
+    "verdict": "normal"
+  },
+  {
+    "record": {
+      "model": "expected",
+      "effort": "high",
+      "_expect": ""
+    },
+    "request": "other",
+    "current_expect": "current-config",
+    "verdict": "downgrade"
+  },
+  {
+    "record": {
+      "model": "expected",
+      "effort": "high",
+      "_verdict": "normal"
+    },
+    "request": "other",
+    "current_expect": "current-config",
+    "verdict": "downgrade"
+  },
+  {
+    "record": {
+      "model": "expected",
+      "effort": "high",
+      "_verdict": "subtask"
+    },
+    "request": "other",
+    "current_expect": "current-config",
+    "verdict": "downgrade"
+  },
+  {
+    "record": {
+      "model": "expected",
+      "effort": "high",
+      "_verdict": "downgrade"
+    },
+    "request": "other",
+    "current_expect": "current-config",
+    "verdict": "downgrade"
+  },
+  {
+    "record": {
+      "model": "expected",
+      "effort": "high",
+      "_verdict": "incomplete"
+    },
+    "request": "other",
+    "current_expect": "current-config",
+    "verdict": "downgrade"
+  },
+  {
+    "record": {
+      "model": "expected",
+      "effort": null,
+      "_expect": ""
+    },
+    "request": null,
+    "current_expect": "current-config",
+    "verdict": "incomplete"
+  },
+  {
+    "record": {
+      "model": "expected",
+      "effort": null,
+      "_verdict": "normal"
+    },
+    "request": null,
+    "current_expect": "current-config",
+    "verdict": "normal"
+  },
+  {
+    "record": {
+      "model": "expected",
+      "effort": null,
+      "_verdict": "subtask"
+    },
+    "request": null,
+    "current_expect": "current-config",
+    "verdict": "subtask"
+  },
+  {
+    "record": {
+      "model": "expected",
+      "effort": null,
+      "_verdict": "downgrade"
+    },
+    "request": null,
+    "current_expect": "current-config",
+    "verdict": "downgrade"
+  },
+  {
+    "record": {
+      "model": "expected",
+      "effort": null,
+      "_verdict": "incomplete"
+    },
+    "request": null,
+    "current_expect": "current-config",
+    "verdict": "incomplete"
+  },
+  {
+    "record": {
+      "model": "expected",
+      "effort": null,
+      "_expect": ""
+    },
+    "request": "expected",
+    "current_expect": "current-config",
+    "verdict": "normal"
+  },
+  {
+    "record": {
+      "model": "expected",
+      "effort": null,
+      "_verdict": "normal"
+    },
+    "request": "expected",
+    "current_expect": "current-config",
+    "verdict": "normal"
+  },
+  {
+    "record": {
+      "model": "expected",
+      "effort": null,
+      "_verdict": "subtask"
+    },
+    "request": "expected",
+    "current_expect": "current-config",
+    "verdict": "subtask"
+  },
+  {
+    "record": {
+      "model": "expected",
+      "effort": null,
+      "_verdict": "downgrade"
+    },
+    "request": "expected",
+    "current_expect": "current-config",
+    "verdict": "downgrade"
+  },
+  {
+    "record": {
+      "model": "expected",
+      "effort": null,
+      "_verdict": "incomplete"
+    },
+    "request": "expected",
+    "current_expect": "current-config",
+    "verdict": "normal"
+  },
+  {
+    "record": {
+      "model": "expected",
+      "effort": null,
+      "_expect": ""
+    },
+    "request": "other",
+    "current_expect": "current-config",
+    "verdict": "downgrade"
+  },
+  {
+    "record": {
+      "model": "expected",
+      "effort": null,
+      "_verdict": "normal"
+    },
+    "request": "other",
+    "current_expect": "current-config",
+    "verdict": "downgrade"
+  },
+  {
+    "record": {
+      "model": "expected",
+      "effort": null,
+      "_verdict": "subtask"
+    },
+    "request": "other",
+    "current_expect": "current-config",
+    "verdict": "downgrade"
+  },
+  {
+    "record": {
+      "model": "expected",
+      "effort": null,
+      "_verdict": "downgrade"
+    },
+    "request": "other",
+    "current_expect": "current-config",
+    "verdict": "downgrade"
+  },
+  {
+    "record": {
+      "model": "expected",
+      "effort": null,
+      "_verdict": "incomplete"
+    },
+    "request": "other",
+    "current_expect": "current-config",
+    "verdict": "downgrade"
+  },
+  {
+    "record": {
+      "model": "other",
+      "effort": "low",
+      "_expect": ""
+    },
+    "request": null,
+    "current_expect": "current-config",
+    "verdict": "incomplete"
+  },
+  {
+    "record": {
+      "model": "other",
+      "effort": "low",
+      "_verdict": "normal"
+    },
+    "request": null,
+    "current_expect": "current-config",
+    "verdict": "normal"
+  },
+  {
+    "record": {
+      "model": "other",
+      "effort": "low",
+      "_verdict": "subtask"
+    },
+    "request": null,
+    "current_expect": "current-config",
+    "verdict": "subtask"
+  },
+  {
+    "record": {
+      "model": "other",
+      "effort": "low",
+      "_verdict": "downgrade"
+    },
+    "request": null,
+    "current_expect": "current-config",
+    "verdict": "downgrade"
+  },
+  {
+    "record": {
+      "model": "other",
+      "effort": "low",
+      "_verdict": "incomplete"
+    },
+    "request": null,
+    "current_expect": "current-config",
+    "verdict": "incomplete"
+  },
+  {
+    "record": {
+      "model": "other",
+      "effort": "low",
+      "_expect": ""
+    },
+    "request": "expected",
+    "current_expect": "current-config",
+    "verdict": "downgrade"
+  },
+  {
+    "record": {
+      "model": "other",
+      "effort": "low",
+      "_verdict": "normal"
+    },
+    "request": "expected",
+    "current_expect": "current-config",
+    "verdict": "downgrade"
+  },
+  {
+    "record": {
+      "model": "other",
+      "effort": "low",
+      "_verdict": "subtask"
+    },
+    "request": "expected",
+    "current_expect": "current-config",
+    "verdict": "downgrade"
+  },
+  {
+    "record": {
+      "model": "other",
+      "effort": "low",
+      "_verdict": "downgrade"
+    },
+    "request": "expected",
+    "current_expect": "current-config",
+    "verdict": "downgrade"
+  },
+  {
+    "record": {
+      "model": "other",
+      "effort": "low",
+      "_verdict": "incomplete"
+    },
+    "request": "expected",
+    "current_expect": "current-config",
+    "verdict": "downgrade"
+  },
+  {
+    "record": {
+      "model": "other",
+      "effort": "low",
+      "_expect": ""
+    },
+    "request": "other",
+    "current_expect": "current-config",
+    "verdict": "normal"
+  },
+  {
+    "record": {
+      "model": "other",
+      "effort": "low",
+      "_verdict": "normal"
+    },
+    "request": "other",
+    "current_expect": "current-config",
+    "verdict": "normal"
+  },
+  {
+    "record": {
+      "model": "other",
+      "effort": "low",
+      "_verdict": "subtask"
+    },
+    "request": "other",
+    "current_expect": "current-config",
+    "verdict": "subtask"
+  },
+  {
+    "record": {
+      "model": "other",
+      "effort": "low",
+      "_verdict": "downgrade"
+    },
+    "request": "other",
+    "current_expect": "current-config",
+    "verdict": "downgrade"
+  },
+  {
+    "record": {
+      "model": "other",
+      "effort": "low",
+      "_verdict": "incomplete"
+    },
+    "request": "other",
+    "current_expect": "current-config",
+    "verdict": "normal"
+  },
+  {
+    "record": {
+      "model": "other",
+      "effort": "high",
+      "_expect": ""
+    },
+    "request": null,
+    "current_expect": "current-config",
+    "verdict": "incomplete"
+  },
+  {
+    "record": {
+      "model": "other",
+      "effort": "high",
+      "_verdict": "normal"
+    },
+    "request": null,
+    "current_expect": "current-config",
+    "verdict": "normal"
+  },
+  {
+    "record": {
+      "model": "other",
+      "effort": "high",
+      "_verdict": "subtask"
+    },
+    "request": null,
+    "current_expect": "current-config",
+    "verdict": "subtask"
+  },
+  {
+    "record": {
+      "model": "other",
+      "effort": "high",
+      "_verdict": "downgrade"
+    },
+    "request": null,
+    "current_expect": "current-config",
+    "verdict": "downgrade"
+  },
+  {
+    "record": {
+      "model": "other",
+      "effort": "high",
+      "_verdict": "incomplete"
+    },
+    "request": null,
+    "current_expect": "current-config",
+    "verdict": "incomplete"
+  },
+  {
+    "record": {
+      "model": "other",
+      "effort": "high",
+      "_expect": ""
+    },
+    "request": "expected",
+    "current_expect": "current-config",
+    "verdict": "downgrade"
+  },
+  {
+    "record": {
+      "model": "other",
+      "effort": "high",
+      "_verdict": "normal"
+    },
+    "request": "expected",
+    "current_expect": "current-config",
+    "verdict": "downgrade"
+  },
+  {
+    "record": {
+      "model": "other",
+      "effort": "high",
+      "_verdict": "subtask"
+    },
+    "request": "expected",
+    "current_expect": "current-config",
+    "verdict": "downgrade"
+  },
+  {
+    "record": {
+      "model": "other",
+      "effort": "high",
+      "_verdict": "downgrade"
+    },
+    "request": "expected",
+    "current_expect": "current-config",
+    "verdict": "downgrade"
+  },
+  {
+    "record": {
+      "model": "other",
+      "effort": "high",
+      "_verdict": "incomplete"
+    },
+    "request": "expected",
+    "current_expect": "current-config",
+    "verdict": "downgrade"
+  },
+  {
+    "record": {
+      "model": "other",
+      "effort": "high",
+      "_expect": ""
+    },
+    "request": "other",
+    "current_expect": "current-config",
+    "verdict": "normal"
+  },
+  {
+    "record": {
+      "model": "other",
+      "effort": "high",
+      "_verdict": "normal"
+    },
+    "request": "other",
+    "current_expect": "current-config",
+    "verdict": "normal"
+  },
+  {
+    "record": {
+      "model": "other",
+      "effort": "high",
+      "_verdict": "subtask"
+    },
+    "request": "other",
+    "current_expect": "current-config",
+    "verdict": "subtask"
+  },
+  {
+    "record": {
+      "model": "other",
+      "effort": "high",
+      "_verdict": "downgrade"
+    },
+    "request": "other",
+    "current_expect": "current-config",
+    "verdict": "downgrade"
+  },
+  {
+    "record": {
+      "model": "other",
+      "effort": "high",
+      "_verdict": "incomplete"
+    },
+    "request": "other",
+    "current_expect": "current-config",
+    "verdict": "normal"
+  },
+  {
+    "record": {
+      "model": "other",
+      "effort": null,
+      "_expect": ""
+    },
+    "request": null,
+    "current_expect": "current-config",
+    "verdict": "incomplete"
+  },
+  {
+    "record": {
+      "model": "other",
+      "effort": null,
+      "_verdict": "normal"
+    },
+    "request": null,
+    "current_expect": "current-config",
+    "verdict": "normal"
+  },
+  {
+    "record": {
+      "model": "other",
+      "effort": null,
+      "_verdict": "subtask"
+    },
+    "request": null,
+    "current_expect": "current-config",
+    "verdict": "subtask"
+  },
+  {
+    "record": {
+      "model": "other",
+      "effort": null,
+      "_verdict": "downgrade"
+    },
+    "request": null,
+    "current_expect": "current-config",
+    "verdict": "downgrade"
+  },
+  {
+    "record": {
+      "model": "other",
+      "effort": null,
+      "_verdict": "incomplete"
+    },
+    "request": null,
+    "current_expect": "current-config",
+    "verdict": "incomplete"
+  },
+  {
+    "record": {
+      "model": "other",
+      "effort": null,
+      "_expect": ""
+    },
+    "request": "expected",
+    "current_expect": "current-config",
+    "verdict": "downgrade"
+  },
+  {
+    "record": {
+      "model": "other",
+      "effort": null,
+      "_verdict": "normal"
+    },
+    "request": "expected",
+    "current_expect": "current-config",
+    "verdict": "downgrade"
+  },
+  {
+    "record": {
+      "model": "other",
+      "effort": null,
+      "_verdict": "subtask"
+    },
+    "request": "expected",
+    "current_expect": "current-config",
+    "verdict": "downgrade"
+  },
+  {
+    "record": {
+      "model": "other",
+      "effort": null,
+      "_verdict": "downgrade"
+    },
+    "request": "expected",
+    "current_expect": "current-config",
+    "verdict": "downgrade"
+  },
+  {
+    "record": {
+      "model": "other",
+      "effort": null,
+      "_verdict": "incomplete"
+    },
+    "request": "expected",
+    "current_expect": "current-config",
+    "verdict": "downgrade"
+  },
+  {
+    "record": {
+      "model": "other",
+      "effort": null,
+      "_expect": ""
+    },
+    "request": "other",
+    "current_expect": "current-config",
+    "verdict": "normal"
+  },
+  {
+    "record": {
+      "model": "other",
+      "effort": null,
+      "_verdict": "normal"
+    },
+    "request": "other",
+    "current_expect": "current-config",
+    "verdict": "normal"
+  },
+  {
+    "record": {
+      "model": "other",
+      "effort": null,
+      "_verdict": "subtask"
+    },
+    "request": "other",
+    "current_expect": "current-config",
+    "verdict": "subtask"
+  },
+  {
+    "record": {
+      "model": "other",
+      "effort": null,
+      "_verdict": "downgrade"
+    },
+    "request": "other",
+    "current_expect": "current-config",
+    "verdict": "downgrade"
+  },
+  {
+    "record": {
+      "model": "other",
+      "effort": null,
+      "_verdict": "incomplete"
+    },
+    "request": "other",
+    "current_expect": "current-config",
+    "verdict": "normal"
+  },
+  {
+    "record": {
+      "model": "expected",
+      "effort": "low",
+      "_expect": "expected"
+    },
+    "request": null,
+    "current_expect": "current-config",
+    "verdict": "normal"
+  },
+  {
+    "record": {
+      "model": "expected",
+      "effort": "low",
+      "_verdict": "normal"
+    },
+    "request": null,
+    "current_expect": "current-config",
+    "verdict": "normal"
+  },
+  {
+    "record": {
+      "model": "expected",
+      "effort": "low",
+      "_verdict": "subtask"
+    },
+    "request": null,
+    "current_expect": "current-config",
+    "verdict": "subtask"
+  },
+  {
+    "record": {
+      "model": "expected",
+      "effort": "low",
+      "_verdict": "downgrade"
+    },
+    "request": null,
+    "current_expect": "current-config",
+    "verdict": "downgrade"
+  },
+  {
+    "record": {
+      "model": "expected",
+      "effort": "low",
+      "_verdict": "incomplete"
+    },
+    "request": null,
+    "current_expect": "current-config",
+    "verdict": "incomplete"
+  },
+  {
+    "record": {
+      "model": "expected",
+      "effort": "low",
+      "_expect": "expected"
+    },
+    "request": "expected",
+    "current_expect": "current-config",
+    "verdict": "normal"
+  },
+  {
+    "record": {
+      "model": "expected",
+      "effort": "low",
+      "_verdict": "normal"
+    },
+    "request": "expected",
+    "current_expect": "current-config",
+    "verdict": "normal"
+  },
+  {
+    "record": {
+      "model": "expected",
+      "effort": "low",
+      "_verdict": "subtask"
+    },
+    "request": "expected",
+    "current_expect": "current-config",
+    "verdict": "subtask"
+  },
+  {
+    "record": {
+      "model": "expected",
+      "effort": "low",
+      "_verdict": "downgrade"
+    },
+    "request": "expected",
+    "current_expect": "current-config",
+    "verdict": "downgrade"
+  },
+  {
+    "record": {
+      "model": "expected",
+      "effort": "low",
+      "_verdict": "incomplete"
+    },
+    "request": "expected",
+    "current_expect": "current-config",
+    "verdict": "normal"
+  },
+  {
+    "record": {
+      "model": "expected",
+      "effort": "low",
+      "_expect": "expected"
+    },
+    "request": "other",
+    "current_expect": "current-config",
+    "verdict": "downgrade"
+  },
+  {
+    "record": {
+      "model": "expected",
+      "effort": "low",
+      "_verdict": "normal"
+    },
+    "request": "other",
+    "current_expect": "current-config",
+    "verdict": "downgrade"
+  },
+  {
+    "record": {
+      "model": "expected",
+      "effort": "low",
+      "_verdict": "subtask"
+    },
+    "request": "other",
+    "current_expect": "current-config",
+    "verdict": "downgrade"
+  },
+  {
+    "record": {
+      "model": "expected",
+      "effort": "low",
+      "_verdict": "downgrade"
+    },
+    "request": "other",
+    "current_expect": "current-config",
+    "verdict": "downgrade"
+  },
+  {
+    "record": {
+      "model": "expected",
+      "effort": "low",
+      "_verdict": "incomplete"
+    },
+    "request": "other",
+    "current_expect": "current-config",
+    "verdict": "downgrade"
+  },
+  {
+    "record": {
+      "model": "expected",
+      "effort": "high",
+      "_expect": "expected"
+    },
+    "request": null,
+    "current_expect": "current-config",
+    "verdict": "normal"
+  },
+  {
+    "record": {
+      "model": "expected",
+      "effort": "high",
+      "_verdict": "normal"
+    },
+    "request": null,
+    "current_expect": "current-config",
+    "verdict": "normal"
+  },
+  {
+    "record": {
+      "model": "expected",
+      "effort": "high",
+      "_verdict": "subtask"
+    },
+    "request": null,
+    "current_expect": "current-config",
+    "verdict": "subtask"
+  },
+  {
+    "record": {
+      "model": "expected",
+      "effort": "high",
+      "_verdict": "downgrade"
+    },
+    "request": null,
+    "current_expect": "current-config",
+    "verdict": "downgrade"
+  },
+  {
+    "record": {
+      "model": "expected",
+      "effort": "high",
+      "_verdict": "incomplete"
+    },
+    "request": null,
+    "current_expect": "current-config",
+    "verdict": "incomplete"
+  },
+  {
+    "record": {
+      "model": "expected",
+      "effort": "high",
+      "_expect": "expected"
+    },
+    "request": "expected",
+    "current_expect": "current-config",
+    "verdict": "normal"
+  },
+  {
+    "record": {
+      "model": "expected",
+      "effort": "high",
+      "_verdict": "normal"
+    },
+    "request": "expected",
+    "current_expect": "current-config",
+    "verdict": "normal"
+  },
+  {
+    "record": {
+      "model": "expected",
+      "effort": "high",
+      "_verdict": "subtask"
+    },
+    "request": "expected",
+    "current_expect": "current-config",
+    "verdict": "subtask"
+  },
+  {
+    "record": {
+      "model": "expected",
+      "effort": "high",
+      "_verdict": "downgrade"
+    },
+    "request": "expected",
+    "current_expect": "current-config",
+    "verdict": "downgrade"
+  },
+  {
+    "record": {
+      "model": "expected",
+      "effort": "high",
+      "_verdict": "incomplete"
+    },
+    "request": "expected",
+    "current_expect": "current-config",
+    "verdict": "normal"
+  },
+  {
+    "record": {
+      "model": "expected",
+      "effort": "high",
+      "_expect": "expected"
+    },
+    "request": "other",
+    "current_expect": "current-config",
+    "verdict": "downgrade"
+  },
+  {
+    "record": {
+      "model": "expected",
+      "effort": "high",
+      "_verdict": "normal"
+    },
+    "request": "other",
+    "current_expect": "current-config",
+    "verdict": "downgrade"
+  },
+  {
+    "record": {
+      "model": "expected",
+      "effort": "high",
+      "_verdict": "subtask"
+    },
+    "request": "other",
+    "current_expect": "current-config",
+    "verdict": "downgrade"
+  },
+  {
+    "record": {
+      "model": "expected",
+      "effort": "high",
+      "_verdict": "downgrade"
+    },
+    "request": "other",
+    "current_expect": "current-config",
+    "verdict": "downgrade"
+  },
+  {
+    "record": {
+      "model": "expected",
+      "effort": "high",
+      "_verdict": "incomplete"
+    },
+    "request": "other",
+    "current_expect": "current-config",
+    "verdict": "downgrade"
+  },
+  {
+    "record": {
+      "model": "expected",
+      "effort": null,
+      "_expect": "expected"
+    },
+    "request": null,
+    "current_expect": "current-config",
+    "verdict": "normal"
+  },
+  {
+    "record": {
+      "model": "expected",
+      "effort": null,
+      "_verdict": "normal"
+    },
+    "request": null,
+    "current_expect": "current-config",
+    "verdict": "normal"
+  },
+  {
+    "record": {
+      "model": "expected",
+      "effort": null,
+      "_verdict": "subtask"
+    },
+    "request": null,
+    "current_expect": "current-config",
+    "verdict": "subtask"
+  },
+  {
+    "record": {
+      "model": "expected",
+      "effort": null,
+      "_verdict": "downgrade"
+    },
+    "request": null,
+    "current_expect": "current-config",
+    "verdict": "downgrade"
+  },
+  {
+    "record": {
+      "model": "expected",
+      "effort": null,
+      "_verdict": "incomplete"
+    },
+    "request": null,
+    "current_expect": "current-config",
+    "verdict": "incomplete"
+  },
+  {
+    "record": {
+      "model": "expected",
+      "effort": null,
+      "_expect": "expected"
+    },
+    "request": "expected",
+    "current_expect": "current-config",
+    "verdict": "normal"
+  },
+  {
+    "record": {
+      "model": "expected",
+      "effort": null,
+      "_verdict": "normal"
+    },
+    "request": "expected",
+    "current_expect": "current-config",
+    "verdict": "normal"
+  },
+  {
+    "record": {
+      "model": "expected",
+      "effort": null,
+      "_verdict": "subtask"
+    },
+    "request": "expected",
+    "current_expect": "current-config",
+    "verdict": "subtask"
+  },
+  {
+    "record": {
+      "model": "expected",
+      "effort": null,
+      "_verdict": "downgrade"
+    },
+    "request": "expected",
+    "current_expect": "current-config",
+    "verdict": "downgrade"
+  },
+  {
+    "record": {
+      "model": "expected",
+      "effort": null,
+      "_verdict": "incomplete"
+    },
+    "request": "expected",
+    "current_expect": "current-config",
+    "verdict": "normal"
+  },
+  {
+    "record": {
+      "model": "expected",
+      "effort": null,
+      "_expect": "expected"
+    },
+    "request": "other",
+    "current_expect": "current-config",
+    "verdict": "downgrade"
+  },
+  {
+    "record": {
+      "model": "expected",
+      "effort": null,
+      "_verdict": "normal"
+    },
+    "request": "other",
+    "current_expect": "current-config",
+    "verdict": "downgrade"
+  },
+  {
+    "record": {
+      "model": "expected",
+      "effort": null,
+      "_verdict": "subtask"
+    },
+    "request": "other",
+    "current_expect": "current-config",
+    "verdict": "downgrade"
+  },
+  {
+    "record": {
+      "model": "expected",
+      "effort": null,
+      "_verdict": "downgrade"
+    },
+    "request": "other",
+    "current_expect": "current-config",
+    "verdict": "downgrade"
+  },
+  {
+    "record": {
+      "model": "expected",
+      "effort": null,
+      "_verdict": "incomplete"
+    },
+    "request": "other",
+    "current_expect": "current-config",
+    "verdict": "downgrade"
+  },
+  {
+    "record": {
+      "model": "other",
+      "effort": "low",
+      "_expect": "expected"
+    },
+    "request": null,
+    "current_expect": "current-config",
+    "verdict": "subtask"
+  },
+  {
+    "record": {
+      "model": "other",
+      "effort": "low",
+      "_verdict": "normal"
+    },
+    "request": null,
+    "current_expect": "current-config",
+    "verdict": "normal"
+  },
+  {
+    "record": {
+      "model": "other",
+      "effort": "low",
+      "_verdict": "subtask"
+    },
+    "request": null,
+    "current_expect": "current-config",
+    "verdict": "subtask"
+  },
+  {
+    "record": {
+      "model": "other",
+      "effort": "low",
+      "_verdict": "downgrade"
+    },
+    "request": null,
+    "current_expect": "current-config",
+    "verdict": "downgrade"
+  },
+  {
+    "record": {
+      "model": "other",
+      "effort": "low",
+      "_verdict": "incomplete"
+    },
+    "request": null,
+    "current_expect": "current-config",
+    "verdict": "incomplete"
+  },
+  {
+    "record": {
+      "model": "other",
+      "effort": "low",
+      "_expect": "expected"
+    },
+    "request": "expected",
+    "current_expect": "current-config",
+    "verdict": "downgrade"
+  },
+  {
+    "record": {
+      "model": "other",
+      "effort": "low",
+      "_verdict": "normal"
+    },
+    "request": "expected",
+    "current_expect": "current-config",
+    "verdict": "downgrade"
+  },
+  {
+    "record": {
+      "model": "other",
+      "effort": "low",
+      "_verdict": "subtask"
+    },
+    "request": "expected",
+    "current_expect": "current-config",
+    "verdict": "downgrade"
+  },
+  {
+    "record": {
+      "model": "other",
+      "effort": "low",
+      "_verdict": "downgrade"
+    },
+    "request": "expected",
+    "current_expect": "current-config",
+    "verdict": "downgrade"
+  },
+  {
+    "record": {
+      "model": "other",
+      "effort": "low",
+      "_verdict": "incomplete"
+    },
+    "request": "expected",
+    "current_expect": "current-config",
+    "verdict": "downgrade"
+  },
+  {
+    "record": {
+      "model": "other",
+      "effort": "low",
+      "_expect": "expected"
+    },
+    "request": "other",
+    "current_expect": "current-config",
+    "verdict": "subtask"
+  },
+  {
+    "record": {
+      "model": "other",
+      "effort": "low",
+      "_verdict": "normal"
+    },
+    "request": "other",
+    "current_expect": "current-config",
+    "verdict": "normal"
+  },
+  {
+    "record": {
+      "model": "other",
+      "effort": "low",
+      "_verdict": "subtask"
+    },
+    "request": "other",
+    "current_expect": "current-config",
+    "verdict": "subtask"
+  },
+  {
+    "record": {
+      "model": "other",
+      "effort": "low",
+      "_verdict": "downgrade"
+    },
+    "request": "other",
+    "current_expect": "current-config",
+    "verdict": "downgrade"
+  },
+  {
+    "record": {
+      "model": "other",
+      "effort": "low",
+      "_verdict": "incomplete"
+    },
+    "request": "other",
+    "current_expect": "current-config",
+    "verdict": "normal"
+  },
+  {
+    "record": {
+      "model": "other",
+      "effort": "high",
+      "_expect": "expected"
+    },
+    "request": null,
+    "current_expect": "current-config",
+    "verdict": "incomplete"
+  },
+  {
+    "record": {
+      "model": "other",
+      "effort": "high",
+      "_verdict": "normal"
+    },
+    "request": null,
+    "current_expect": "current-config",
+    "verdict": "normal"
+  },
+  {
+    "record": {
+      "model": "other",
+      "effort": "high",
+      "_verdict": "subtask"
+    },
+    "request": null,
+    "current_expect": "current-config",
+    "verdict": "subtask"
+  },
+  {
+    "record": {
+      "model": "other",
+      "effort": "high",
+      "_verdict": "downgrade"
+    },
+    "request": null,
+    "current_expect": "current-config",
+    "verdict": "downgrade"
+  },
+  {
+    "record": {
+      "model": "other",
+      "effort": "high",
+      "_verdict": "incomplete"
+    },
+    "request": null,
+    "current_expect": "current-config",
+    "verdict": "incomplete"
+  },
+  {
+    "record": {
+      "model": "other",
+      "effort": "high",
+      "_expect": "expected"
+    },
+    "request": "expected",
+    "current_expect": "current-config",
+    "verdict": "downgrade"
+  },
+  {
+    "record": {
+      "model": "other",
+      "effort": "high",
+      "_verdict": "normal"
+    },
+    "request": "expected",
+    "current_expect": "current-config",
+    "verdict": "downgrade"
+  },
+  {
+    "record": {
+      "model": "other",
+      "effort": "high",
+      "_verdict": "subtask"
+    },
+    "request": "expected",
+    "current_expect": "current-config",
+    "verdict": "downgrade"
+  },
+  {
+    "record": {
+      "model": "other",
+      "effort": "high",
+      "_verdict": "downgrade"
+    },
+    "request": "expected",
+    "current_expect": "current-config",
+    "verdict": "downgrade"
+  },
+  {
+    "record": {
+      "model": "other",
+      "effort": "high",
+      "_verdict": "incomplete"
+    },
+    "request": "expected",
+    "current_expect": "current-config",
+    "verdict": "downgrade"
+  },
+  {
+    "record": {
+      "model": "other",
+      "effort": "high",
+      "_expect": "expected"
+    },
+    "request": "other",
+    "current_expect": "current-config",
+    "verdict": "subtask"
+  },
+  {
+    "record": {
+      "model": "other",
+      "effort": "high",
+      "_verdict": "normal"
+    },
+    "request": "other",
+    "current_expect": "current-config",
+    "verdict": "normal"
+  },
+  {
+    "record": {
+      "model": "other",
+      "effort": "high",
+      "_verdict": "subtask"
+    },
+    "request": "other",
+    "current_expect": "current-config",
+    "verdict": "subtask"
+  },
+  {
+    "record": {
+      "model": "other",
+      "effort": "high",
+      "_verdict": "downgrade"
+    },
+    "request": "other",
+    "current_expect": "current-config",
+    "verdict": "downgrade"
+  },
+  {
+    "record": {
+      "model": "other",
+      "effort": "high",
+      "_verdict": "incomplete"
+    },
+    "request": "other",
+    "current_expect": "current-config",
+    "verdict": "normal"
+  },
+  {
+    "record": {
+      "model": "other",
+      "effort": null,
+      "_expect": "expected"
+    },
+    "request": null,
+    "current_expect": "current-config",
+    "verdict": "incomplete"
+  },
+  {
+    "record": {
+      "model": "other",
+      "effort": null,
+      "_verdict": "normal"
+    },
+    "request": null,
+    "current_expect": "current-config",
+    "verdict": "normal"
+  },
+  {
+    "record": {
+      "model": "other",
+      "effort": null,
+      "_verdict": "subtask"
+    },
+    "request": null,
+    "current_expect": "current-config",
+    "verdict": "subtask"
+  },
+  {
+    "record": {
+      "model": "other",
+      "effort": null,
+      "_verdict": "downgrade"
+    },
+    "request": null,
+    "current_expect": "current-config",
+    "verdict": "downgrade"
+  },
+  {
+    "record": {
+      "model": "other",
+      "effort": null,
+      "_verdict": "incomplete"
+    },
+    "request": null,
+    "current_expect": "current-config",
+    "verdict": "incomplete"
+  },
+  {
+    "record": {
+      "model": "other",
+      "effort": null,
+      "_expect": "expected"
+    },
+    "request": "expected",
+    "current_expect": "current-config",
+    "verdict": "downgrade"
+  },
+  {
+    "record": {
+      "model": "other",
+      "effort": null,
+      "_verdict": "normal"
+    },
+    "request": "expected",
+    "current_expect": "current-config",
+    "verdict": "downgrade"
+  },
+  {
+    "record": {
+      "model": "other",
+      "effort": null,
+      "_verdict": "subtask"
+    },
+    "request": "expected",
+    "current_expect": "current-config",
+    "verdict": "downgrade"
+  },
+  {
+    "record": {
+      "model": "other",
+      "effort": null,
+      "_verdict": "downgrade"
+    },
+    "request": "expected",
+    "current_expect": "current-config",
+    "verdict": "downgrade"
+  },
+  {
+    "record": {
+      "model": "other",
+      "effort": null,
+      "_verdict": "incomplete"
+    },
+    "request": "expected",
+    "current_expect": "current-config",
+    "verdict": "downgrade"
+  },
+  {
+    "record": {
+      "model": "other",
+      "effort": null,
+      "_expect": "expected"
+    },
+    "request": "other",
+    "current_expect": "current-config",
+    "verdict": "subtask"
+  },
+  {
+    "record": {
+      "model": "other",
+      "effort": null,
+      "_verdict": "normal"
+    },
+    "request": "other",
+    "current_expect": "current-config",
+    "verdict": "normal"
+  },
+  {
+    "record": {
+      "model": "other",
+      "effort": null,
+      "_verdict": "subtask"
+    },
+    "request": "other",
+    "current_expect": "current-config",
+    "verdict": "subtask"
+  },
+  {
+    "record": {
+      "model": "other",
+      "effort": null,
+      "_verdict": "downgrade"
+    },
+    "request": "other",
+    "current_expect": "current-config",
+    "verdict": "downgrade"
+  },
+  {
+    "record": {
+      "model": "other",
+      "effort": null,
+      "_verdict": "incomplete"
+    },
+    "request": "other",
+    "current_expect": "current-config",
+    "verdict": "normal"
+  }
+]

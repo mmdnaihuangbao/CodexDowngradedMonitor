@@ -1,5 +1,6 @@
 # Local validation artifacts and runtime logs
 _verify/
+out/
 *.log
 port.txt
 

@@ -1,72 +1,20 @@
-# CodexDowngradedMonitor 发布包使用指引
+# v0.5 发布包使用说明
 
-这个压缩包已经包含 Windows amd64 版本的 C++ 采集器，使用时不需要安装 Visual Studio，也不需要重新构建 C++。它仍然只是一个仅供参考和学习的分析实验，不具备生产或长期监控价值。
+适用于 Windows x64。解压后只有一个 EXE、两个 BAT 和 Web 目录；无需安装 Python、Rust、Visual Studio 或额外 SQLite DLL。
 
-## 环境要求
+1. 将压缩包完整解压到可写目录。
+2. 双击 `start.bat` 或 `CodexDowngradedMonitor.exe`。
+3. 浏览器打开启动器显示的地址，默认 `http://localhost:48778/`。
+4. 使用 `stop.bat` 关闭；也可以执行 `CodexDowngradedMonitor.exe --stop`。
 
-- Windows 10/11 或兼容的 Windows 环境。
-- Python 3.8 或更高版本，并且 `python` 可以从终端调用。
-- 本机已经安装并运行 Codex，使系统中出现 `codex.exe`。
+从旧版升级：先正常关闭旧版，再将旧目录的 **config.json 和完整 data 目录** 复制到新包，直接启动。无需导入、转换、清库或重新配置。旧版仍运行时，新版会拒绝重复启动。
 
-## 启动
+首次运行只在 EXE 目录创建 config.json 与 data。应用日志、数据库、缓存和临时文件均留在这里；目录不可写时会报错，不会回退用户目录。Codex 的日志和会话文件只是只读输入。
 
-1. 解压整个目录，不要单独移动或删除 `cpp_collector`、`web` 和根目录的 Python 文件。
-2. 双击 `start.bat`。
-3. 启动器会自动打开本地面板，默认地址为 `http://localhost:48778/`。
+`--status` 显示主实例的 PID、实际地址、目录和启动阶段。`--stop` 通过独立命名管道控制，即使 HTTP 端口变化、worker 失效也能响应；只有主进程实际退出后才报告成功。不同解压目录共享同一 Windows 用户级单例。
 
-如果不希望自动打开浏览器，可以在 PowerShell 中运行：
+设置页可调整预期模型、最小扫描间隔和线程数。命令行覆盖只影响当次运行；已有 config.json 不会在普通启动时重写。配置字段 cpp_port、配置版本 0.1、历史数据版本 0.3 和索引格式 3 均保留。
 
-```powershell
-python .\start.py --no-open
-```
+排障查看 `data/logs/collector.log`，其中记录控制管道、数据库、HTTP 和停止阶段耗时。若提示旧版占用单例，先用旧版停止脚本关闭，不能绕过 Mutex 另起扫描器。
 
-Codex 尚未运行时，面板显示“未发现 codex.exe”是正常状态；启动 Codex 后采集器会自动重连。
-
-## 查看状态和停止
-
-```powershell
-python .\start.py --status
-python .\start.py --stop
-```
-
-也可以双击 `stop-cpp.bat` 停止当前用户的监控服务。
-
-### 重复启动与单例保护
-
-同一 Windows 用户只允许一个采集服务，使用 Windows 命名互斥量保护。
-不同端口、数据库路径、仓库副本和直接运行 `collector.py` 都不能绕过此限制。
-重复运行启动器会打开已有面板，本次命令中的端口和扫描参数不会修改运行中的服务。
-启动尚未完成时会等待已有实例，不会启动第二套扫描器。
-
-实际服务地址记录在 `%LOCALAPPDATA%\CodexDowngradedMonitor\instance.json`，
-启动器核对健康接口的进程和实例标识后才复用；状态与停止命令不要求记住实际端口。
-崩溃后互斥锁由 Windows 回收，过期地址记录不会作为服务仍在运行的依据。
-由服务创建的 C++ 扫描器受 Windows Job Object 管理，Python 异常退出时也会清理。
-单例保护适用于 Python 采集服务入口，开发用途直接运行 C++ 可执行文件不经过此入口。
-
-升级前已经运行的旧版服务没有互斥锁，需要先停止旧服务再启动新版，保护才会生效。
-
-## 设置预期模型
-
-可以在面板的“设置”中填写预期模型，也可以在启动时指定：
-
-```powershell
-python .\start.py --expect gpt-6-astra
-```
-
-设置会保存到同目录的 `config.json`。本包内的默认配置来自构建该 Release 时仓库中的 `config.json`。
-
-## 数据位置
-
-- `data/monitor.sqlite`：历史记录，首次运行时自动创建。
-- `collector.log`：运行日志。
-- `config.json`：当前配置。
-
-这些文件只写入本机。默认 HTTP 服务只监听 `localhost`；如果把 `host` 改为 `0.0.0.0`，请确认当前网络可信，因为接口没有身份认证。
-
-## 常见问题
-
-- **提示找不到 C++ 采集器**：确认压缩包完整解压，并保留 `cpp_collector\build\collector_native.exe`。
-- **提示未发现 codex.exe**：确认 Codex 已启动，并检查任务管理器中的进程名。
-- **页面没有新记录**：响应对象生命周期很短，先在 Codex 中发起一次新请求，再查看面板的诊断信息。
-- **降级记录显示为“不完整”**：请求侧证据没有采到，工具会保守地避免误报。
+更完整说明在包内 `Web/help.html`，第三方许可在 `Web/licenses/`。本工具是实验性字段观测工具，协议字段不能证明真实模型权重或能力。

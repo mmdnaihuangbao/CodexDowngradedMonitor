@@ -1,0 +1,31 @@
+[
+  {
+    "payload": {
+      "prev": null,
+      "model": "gpt-test",
+      "source": "memory"
+    },
+    "packed": "{\"model\":\"gpt-test\",\"prev\":null,\"source\":\"memory\"}",
+    "sha256": "fe60fbf8742a646eba2195fcc07ce2ad659d96add9baac390391b4b824e6d4af"
+  },
+  {
+    "payload": {
+      "prev": "resp_中文",
+      "model": "test",
+      "source": "memory_websocket",
+      "turn_id": "turn\\\"中"
+    },
+    "packed": "{\"model\":\"test\",\"prev\":\"resp_中文\",\"source\":\"memory_websocket\",\"turn_id\":\"turn\\\\\\\"中\"}",
+    "sha256": "7f74740b4ee712c1983d1a23b91cdb91f0295a0d4f22116462365b63b9e48294"
+  },
+  {
+    "payload": {
+      "prev": "resp_p",
+      "model": "candidate",
+      "source": "memory_http_candidate",
+      "candidate_only": "1"
+    },
+    "packed": "{\"candidate_only\":\"1\",\"model\":\"candidate\",\"prev\":\"resp_p\",\"source\":\"memory_http_candidate\"}",
+    "sha256": "2d0e0f6427f05ae7a41f62cc9a2b0e075777824add935b2d54449ddc762de496"
+  }
+]

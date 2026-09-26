@@ -47,93 +47,39 @@
 ### 风险与兼容性
 
 - **仅测试过 Windows**。实现依赖 Win32 的进程发现、`VirtualQueryEx` 和 `ReadProcessMemory`；macOS/Linux 当前不支持。
-- 需要 Python 3.8+。首次运行需要用 Visual Studio 2022 的 C++ 工作负载构建原生采集器。
 - 只监控一个 `codex.exe` 引擎进程；存在多个候选进程时按当前选择规则选取一个。
 - Codex 的内存对象、日志表结构和 rollout 格式都属于内部实现，版本更新可能导致漏采、误判或旁路索引失效。
 - 连续扫描会消耗 CPU 和内存带宽；对象生命周期很短，采样间隔过大时可能漏掉请求。
 - 默认 HTTP 只监听 `localhost`。如果改成 `0.0.0.0`，接口没有身份认证，并且包含修改配置和停止服务的操作，只应在可信网络中使用。
 - 工具观察到的是进程中的协议字段，不能证明服务端实际使用了哪套模型权重，也不能替代官方账单、审计或安全日志。
 
-## GitHub Release 包（无需构建 C++）
+## 使用Release包
 
-GitHub Release 会提供类似 `CodexDowngradedMonitor-v0.3.0-windows-amd64.zip` 的最小运行包。压缩包已经包含 `cpp_collector\build\collector_native.exe`，使用者不需要安装 Visual Studio 或重新编译 C++；只需要 Windows、Python 3.8+ 和本机 Codex。
+从 [Releases](https://github.com/mmdnaihuangbao/CodexDowngradedMonitor/releases) 下载最新发布包并解压。
 
-1. 在 GitHub Release 页面下载 `windows-amd64.zip`。
-2. 将整个压缩包解压到任意目录，保留 `cpp_collector`、`web` 和根目录文件的相对位置。
-3. 双击 `start.bat`，或运行 `python .\start.py`。
-4. 浏览器打开 `http://localhost:48778/`；停止时运行 `python .\start.py --stop`。
+- 双击 `start.bat` 启动。
+- 双击 `stop.bat` 关闭。
 
-压缩包根目录的 `README.md` 是面向使用者的免构建指引，详见仓库中的 [发布包使用指引](docs/RELEASE_USAGE.md)。包内的默认 `config.json` 直接来自创建该 Release 时所选分支的当前仓库配置。
+从旧版本迁移时，先关闭旧版，再将 `config.json` 和 `data` 目录拷贝到新发布包中。
 
-### 手动创建 Release
+## 从源码构建
 
-仓库预置了 [`Build and publish Windows release`](.github/workflows/release.yml) 工作流：
-
-1. 打开 GitHub 仓库的 **Actions**，选择该工作流并点击 **Run workflow**。
-2. 选择要发布的分支或提交。
-3. 输入版本号（例如 `0.3.0` 或 `v0.3.0`）和本次变更内容，可选标记为预发布版本。
-4. 工作流在 Windows amd64 runner 上运行 Python 测试、构建 C++ 采集器、生成最小压缩包，并创建对应的 GitHub Release。
-
-版本号会生成 `v` 前缀的 Git tag。发布包使用所选 revision 中的源代码和 `config.json`，不会使用发布机器上的本地数据库、日志或其他运行时文件。
-
-## 从源码部署与启动
-
-### 环境要求
-
-- Windows，且本机已安装并运行 Codex，使系统中存在 `codex.exe`。
-- Python 3.8 或更高版本，`python` 已加入 `PATH`。
-- Visual Studio 2022 的 **Desktop development with C++** 工作负载和 Windows SDK。
-- Python 部分只使用标准库，不需要安装第三方包。
-
-### 1. 获取代码并构建 C++ 采集器
+需要 Windows x64、Rust 1.92.0、VS2022 Desktop development with C++ 和 Windows SDK。工具链由 `rust-toolchain.toml` 固定，所有直接依赖使用精确版本，完整依赖图由 `Cargo.lock` 固定；构建与 CI 使用 `--locked`。
 
 ```powershell
-git clone <仓库地址>
-cd CodexDowngradedMonitor
-
-powershell -NoProfile -ExecutionPolicy Bypass `
-  -File .\cpp_collector\build.ps1
+.\src\tools\build.ps1 -Tests
+.\src\tools\test.ps1 -PerformanceRuns 20
+.\src\tools\package_release.ps1 -Version 0.5.0
+.\out\run\start.bat
 ```
 
-构建结果为 `cpp_collector\build\collector_native.exe`。该目录被 `.gitignore` 忽略，所以新环境需要先完成一次构建；仓库没有提交预编译二进制文件。
+源码、Web、BAT 模板、测试和工具都在 `src/`；依赖缓存、构建、测试报告和发布产物都在忽略目录 `out/`。运行开发版时使用 `out/run`，不会把运行数据库写回源码目录。
 
-### 2. 启动
-
-```powershell
-python .\start.py
-```
-
-启动器会把采集服务放到后台并自动打开 `http://localhost:48778/`。也可以双击根目录的 `start.bat`。Codex 尚未运行时，面板会显示“未发现 codex.exe”；之后启动 Codex，采集器会自动重连。
-
-常用命令：
-
-```powershell
-python .\start.py --status                         # 查看运行状态
-python .\start.py --stop                           # 停止服务
-python .\start.py --no-open                        # 启动但不打开浏览器
-python .\start.py --fg                             # 前台运行，Ctrl+C 停止
-python .\start.py --expect gpt-6-astra             # 设置预期模型
-python .\start.py --workers 8 --min-interval-ms 100
-```
-
-`start-cpp.bat` 是 `start.bat` 的兼容入口，`stop-cpp.bat` 会把 `--stop` 传给启动器。默认端口被占用时，服务会自动尝试后续端口，并在启动输出中打印实际地址。
-
-同一 Windows 用户只运行一个采集实例，服务只监听一个实际端口。启动器优先通过单例记录中的地址和实例身份查找服务，不再逐个探测 12 个端口；检查和等待期间会立即输出进度。如果实例记录不可见或过期，但单例锁仍被持有，则检查配置中的一个端口并验证服务身份。仍无法连接时会明确报错，不会误报“未运行”或“无需停止”。若此时服务实际使用了其他端口，可用 `--port` 指定面板中的实际端口。
+发布工作流先执行 Rust 兼容测试与实际进程/HTTP 集成测试，再生成 ZIP。推送 `v*` 标签或手动执行发布工作流才会创建远端 Release；本地打包不会提交、打标签或推送。
 
 ## 配置
 
 根目录的 `config.json` 保存默认设置：
-
-```json
-{
-  "version": "0.1",
-  "host": "localhost",
-  "cpp_port": 48778,
-  "expect": "",
-  "min_interval_ms": 250,
-  "workers": 1
-}
-```
 
 | 字段 | 取值 | 作用 |
 | --- | --- | --- |
@@ -141,18 +87,18 @@ python .\start.py --workers 8 --min-interval-ms 100
 | `cpp_port` | `1`～`65535` | HTTP 服务起始端口 |
 | `expect` | 字符串，可为空 | 预期模型，用于正常/子任务判定 |
 | `min_interval_ms` | `0`～`60000` | 两轮扫描开始时间的最小间隔；`0` 表示连续扫描 |
-| `workers` | `1`～`16` | C++ 扫描线程数，默认 `4` |
+| `workers` | `1`～`16` | Rust 扫描线程数，默认 `1` |
 
 面板的“设置”可以修改 `expect`、`min_interval_ms` 和 `workers`，并写回配置文件。命令行参数只覆盖当次运行。需要降低资源占用时，增大 `--min-interval-ms`；需要减少短生命周期对象漏采时，可在机器允许的范围内提高 `--workers`。
 
 ## 面板和判定
 
-服务由一个 Python 进程、一个常驻 C++ 辅助进程和浏览器页面组成：
+服务由同一 EXE 的 Rust 主服务和扫描 worker 两种角色，以及现有浏览器页面组成：
 
 ```mermaid
 flowchart LR
-    A[Codex / codex.exe] --> B[C++ 只读扫描器]
-    B --> C[Python 监控服务]
+    A[Codex / codex.exe] --> B[Rust 只读扫描 worker]
+    B --> C[Rust 主服务]
     D[本地 logs*.sqlite 与 rollout] --> C
     C --> E[(data/monitor.sqlite)]
     C --> F[HTTP + SSE]
@@ -193,47 +139,29 @@ flowchart LR
 | `POST` | `/api/clear` | 清空当前运行日志视图，保留 SQLite 历史记录 |
 | `POST` | `/api/shutdown` | 停止采集器和 HTTP 服务 |
 
-```powershell
-Invoke-RestMethod http://localhost:48778/api/snapshot
-```
+运行时数据写入 `data/monitor.sqlite`，启停诊断日志写入 `data/logs/collector.log`；两者默认都被 `.gitignore` 忽略。
 
-运行时数据写入 `data/monitor.sqlite`，日志写入 `collector.log`；两者默认都被 `.gitignore` 忽略。
-
-## 项目结构
+## 项目结构与验证
 
 | 路径 | 作用 |
 | --- | --- |
-| `start.py` | 启动、查看状态、停止服务的统一入口 |
-| `collector.py` | 判定、告警、持久化和 HTTP/SSE 服务 |
-| `native_scanner.py` | Python 与 C++ 辅助进程之间的 JSON 适配层 |
-| `process_discovery.py` | 使用 Win32 API 查找 `codex.exe` |
-| `evidence_index.py` | 只读索引 Codex 日志和 rollout |
-| `history_store.py` | SQLite 历史库、分页查询和事件记录 |
-| `cpp_collector/` | C++ 内存扫描、预筛、字段解析和原生测试 |
-| `web/` | 浏览器面板的 HTML、CSS 和 JavaScript |
-| `.github/workflows/release.yml` | 手动触发的 Windows amd64 构建与 GitHub Release 工作流 |
-| `tools/package_release.ps1` | 收集运行文件、写入发布说明并生成最小压缩包 |
-| `docs/RELEASE_USAGE.md` | 放入 Release 压缩包根目录的免构建使用指引 |
+| `src/app.rs`、`platform.rs`、`control.rs` | 命令模式、Win32 单例与独立控制管道 |
+| `src/scanner.rs`、`extract.rs`、`worker.rs` | 只读扫描、字段解析和 Job Object 进程管理 |
+| `src/monitor.rs`、`domain.rs` | 配对、判定、告警、完成态与延迟回补 |
+| `src/storage.rs`、`config.rs`、`evidence.rs` | 兼容存储、原子配置、只读旁路证据 |
+| `src/http.rs`、`src/Web/` | HTTP/SSE 与浏览器面板 |
+| `src/tests/`、`src/tools/`、`src/launchers/` | 固定样例、测试、构建打包与 BAT 模板 |
 
-更深入的资料：
-
-- [C++ 采集器说明](cpp_collector/README.md)：只读边界、性能实现和原生测试。
-- [历史库说明](HISTORY.md)：SQLite 表结构、迁移和兼容行为。
-- [字段调查](FIELD_SURVEY.md)：实际观测到的协议字段和调查边界。
-- [请求模型来源调查](cpp_collector/REQUEST_MODEL_SOURCES.md)：`rollout` 和 `logs*.sqlite` 证据的来源与局限。
-
-## 开发与验证
-
-构建 C++ 采集器后，可以运行：
+测试包含 v0.4 的 180 组判定对照、JSON 指纹、原始 schema 和游标兼容、写库失败回滚、3105 条历史回补、只读 WAL、跨块扫描、worker 崩溃、跨目录单例、实际 HTTP/SSE 与整目录升级。
 
 ```powershell
-python -m unittest discover -s tests -p "test_*.py" -v
-python .\_selftest.py
-powershell -NoProfile -ExecutionPolicy Bypass `
-  -File .\cpp_collector\tests\run.ps1
+$env:CARGO_HOME = Join-Path $PWD 'out/cargo'
+cargo test --locked
+cargo fmt --all --check
+cargo clippy --locked --all-targets --all-features -- -D warnings
 ```
 
-其中 `_selftest.py` 会启动临时服务，检查静态资源、快照、SSE、配置、日志清理、端口顺延和停止接口；C++ 测试覆盖跨块对象、长字段、相邻对象隔离、请求配对、只读进程读取和辅助进程生命周期。
+`readonly_child` 是由只读 WAL 测试主动启动的子进程测试助手；默认列表显示 ignored，它的断言由父测试执行并检查退出码。
 
 ## 模型说明
 
@@ -243,7 +171,7 @@ powershell -NoProfile -ExecutionPolicy Bypass `
 | --- | --- |
 | 调研、前端、最小实现、请求模型匹配优化 | DeepSeek V4.1 Flash |
 | 前端设计 | Hy4 preview（WorkBuddy） |
-| 优化、文档、GitHub Actions | GPT 6 Astra |
+| 优化、文档、GitHub Actions、Rust 重构 | GPT 6 Astra |
 | 摆烂（请求模型匹配优化） | GPT 5.6 Sol |
 | 文档、版本管理 | GLM 5.3 Flash |
 
