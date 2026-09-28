@@ -61,12 +61,12 @@ impl Args {
 }
 pub async fn command(args: Args) -> Result<i32> {
     if args.mode == "--version" {
-        println!("0.5.0");
+        println!("0.5.1");
         return Ok(0);
     }
     if args.mode == "--help" {
         println!(
-            "Codex 降智雷达 0.5.0\n--start [--no-open]  --stop  --status  --foreground\n--host HOST --port PORT --expect MODEL --workers 1..16 --min-interval-ms 0..60000\n配置和数据只保存在 EXE 目录；升级复制 config.json 和 data/。"
+            "Codex 降智雷达 0.5.1\n--start [--no-open]  --stop  --status  --foreground\n--host HOST --port PORT --expect MODEL --workers 1..16 --min-interval-ms 0..60000\n配置和数据只保存在 EXE 目录；升级复制 config.json 和 data/。"
         );
         return Ok(0);
     }
@@ -240,7 +240,7 @@ pub async fn serve(args: Args) -> Result<i32> {
     let (stop, mut stopped) = watch::channel(false);
     let (control_exit, control_done) = watch::channel(false);
     let status = Arc::new(Mutex::new(
-        json!({"protocol":1,"service":"codex-model-monitor","pid":std::process::id(),"instance_id":format!("{}-{}",std::process::id(),crate::domain::now()),"version":"0.5.0","stage":"initializing","root":root,"data":root.join("data"),"backend":"rust"}),
+        json!({"protocol":1,"service":"codex-model-monitor","pid":std::process::id(),"instance_id":format!("{}-{}",std::process::id(),crate::domain::now()),"version":"0.5.1","stage":"initializing","root":root,"data":root.join("data"),"backend":"rust"}),
     ));
     let control_task = tokio::spawn(control::serve(
         control::create(&sid, true)?,
@@ -261,14 +261,57 @@ pub async fn serve(args: Args) -> Result<i32> {
         let(broker,_)=tokio::sync::broadcast::channel(2000);let init_root=root.clone();let init_broker=broker.clone();
         let settings_copy=settings.clone();let init=tokio::task::spawn_blocking(move||Monitor::open(&init_root,settings_copy,init_broker));
         let monitor=tokio::select!{r=init=>r??,_=stopped.changed()=>return Ok::<(),anyhow::Error>(())};trace(&root,start,"database ready");
-        let monitor=Arc::new(Mutex::new(monitor));let host=crate::domain::text(&settings,"host");let port=settings["cpp_port"].as_u64().unwrap() as u16;
-        let mut listener=None;let mut last=None;
-        for p in port..=port.saturating_add(11){match tokio::net::TcpListener::bind((host,p)).await{Ok(l)=>{listener=Some(l);break;},Err(e)=>last=Some(e)}}
-        let listener=listener.ok_or_else(||anyhow::anyhow!("HTTP 绑定失败：{:?}",last))?;let actual=listener.local_addr()?.port();
-        let url=format!("http://{}:{actual}/",if host=="0.0.0.0"{"localhost"}else{host});
+        let monitor = Arc::new(Mutex::new(monitor));
+        let host = crate::domain::text(&settings, "host");
+        let is_localhost = host.eq_ignore_ascii_case("localhost");
+        // 先绑定 IPv4 并用它打开面板，避免 TUN 阻断 IPv6 时 localhost 无法访问。
+        let bind_host = if is_localhost {
+            "127.0.0.1"
+        } else {
+            host
+        };
+        let port = settings["cpp_port"].as_u64().unwrap() as u16;
+        let mut listener = None;
+        let mut last = None;
+        for p in port..=port.saturating_add(11) {
+            match tokio::net::TcpListener::bind((bind_host, p)).await {
+                Ok(l) => {
+                    listener = Some(l);
+                    break;
+                }
+                Err(e) => last = Some(e),
+            }
+        }
+        let listener = listener.ok_or_else(|| anyhow::anyhow!("HTTP 绑定失败：{:?}", last))?;
+        let actual = listener.local_addr()?.port();
+        let mut listeners = vec![listener];
+        if is_localhost {
+            // 独立监听 IPv6 回环以支持双栈；系统禁用 IPv6 时仍保留 IPv4 服务。
+            match tokio::net::TcpListener::bind((std::net::Ipv6Addr::LOCALHOST, actual)).await {
+                Ok(listener) => listeners.push(listener),
+                Err(e) => trace(&root, start, &format!("IPv6 回环监听不可用，继续使用 IPv4：{e}")),
+            }
+        }
+        let url_host = if bind_host == "0.0.0.0" { "localhost" } else { bind_host };
+        let url = format!("http://{url_host}:{actual}/");
         {let mut s=status.lock().unwrap();s["url"]=json!(url);s["port"]=json!(actual);s["stage"]=json!("ready");}
         let app=http::App{monitor:monitor.clone(),root:root.clone(),stop:stop.clone(),status:status.clone(),broker};
-        let mut http_stop=stop.subscribe();let http_task=tokio::spawn(async move{axum::serve(listener,http::router(app)).with_graceful_shutdown(async move{if !*http_stop.borrow(){let _=http_stop.changed().await;}}).await});
+        let mut http_tasks = tokio::task::JoinSet::new();
+        for listener in listeners {
+            trace(&root, start, &format!("HTTP listening on {}", listener.local_addr()?));
+            let router = http::router(app.clone());
+            let mut http_stop = stop.subscribe();
+            // 两个监听任务共享服务和停止信号，在原有的统一退出期限内收尾。
+            http_tasks.spawn(async move {
+                axum::serve(listener, router)
+                    .with_graceful_shutdown(async move {
+                        if !*http_stop.borrow() {
+                            let _ = http_stop.changed().await;
+                        }
+                    })
+                    .await
+            });
+        }
         trace(&root,start,"HTTP ready");
         let scan_monitor=monitor.clone();let scan_stop=stop.subscribe();let scan=std::thread::Builder::new().name("scanner-supervisor".into()).spawn(move||scan_loop(scan_monitor,scan_stop,args.target))?;
         let evidence=if !args.no_evidence{let m=monitor.clone();let s=stop.subscribe();Some(std::thread::Builder::new().name("evidence".into()).spawn(move||crate::evidence::run(m,s))?)}else{monitor.lock().unwrap().evidence_stats["enabled"]=json!(false);None};
@@ -276,7 +319,9 @@ pub async fn serve(args: Args) -> Result<i32> {
         status.lock().unwrap()["stage"]=json!("stopping");trace(&root,start,"stop accepted");
         tokio::task::spawn_blocking(move||scan.join().map_err(|_|anyhow::anyhow!("扫描线程异常退出"))).await???;
         if let Some(evidence)=evidence{tokio::task::spawn_blocking(move||evidence.join().map_err(|_|anyhow::anyhow!("证据线程异常退出"))).await???;}
-        let _=tokio::time::timeout(Duration::from_secs(2),http_task).await;
+        let _ = tokio::time::timeout(Duration::from_secs(2), async {
+            while http_tasks.join_next().await.is_some() {}
+        }).await;
         monitor.lock().unwrap().store.db.execute_batch("PRAGMA wal_checkpoint(TRUNCATE)")?;
         trace(&root,start,"worker exited; database flushed; shutdown complete");Ok(())
     }.await;

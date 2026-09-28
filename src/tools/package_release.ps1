@@ -1,5 +1,5 @@
 [CmdletBinding()]
-param([string]$Version='0.5.0',[string]$Changes='Rust 重构；便携目录；保留旧配置和历史数据。',[string]$OutputDirectory='')
+param([string]$Version='0.5.1',[string]$Changes='Rust 重构；便携目录；保留旧配置和历史数据。',[string]$OutputDirectory='')
 $ErrorActionPreference='Stop'
 $repo=[IO.Path]::GetFullPath((Join-Path $PSScriptRoot '../..'))
 $versionText=$Version.Trim().TrimStart('v')
