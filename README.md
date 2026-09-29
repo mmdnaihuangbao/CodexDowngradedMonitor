@@ -1,3 +1,11 @@
+**2026年9月29日实测已失效**
+
+以后再用codex没有任何信任可言，你都不知道他给你用的什么，你还敢让他干活吗？
+
+![2026年9月29日实测截图](docs/images/no-longer-effective-2026-09-29.png)
+
+---
+
 # CodexDowngradedMonitor · Codex 降智雷达
 
 中文 · [English](docs/README.en.md)

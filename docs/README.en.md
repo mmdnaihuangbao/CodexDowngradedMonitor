@@ -1,3 +1,11 @@
+**Tested on September 29, 2026: no longer effective.**
+
+There is no trust left in Codex. You don't even know what model it is using for you—do you still dare to let it do your work?
+
+![Test screenshot from September 29, 2026](images/no-longer-effective-2026-09-29.png)
+
+---
+
 # Codex Downgraded Monitor 0.5
 
 [中文](../README.md)
